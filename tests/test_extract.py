@@ -19,8 +19,12 @@ from pydantic import ValidationError
 from backend.extract import (
     extract_document_facts,
     extract_facts_from_chunk,
+    get_checkpoint_path,
+    load_checkpoint,
+    save_checkpoint,
     should_process_chunk,
     validate_evidence_grounding,
+    validate_temporal_grounding,
 )
 from backend.ingest import Chunk
 from backend.schema import ChunkFactsExtraction, ExtractedFact, Fact
@@ -195,3 +199,177 @@ def test_extraction_pipeline_with_mock_llm(tmp_path):
         assert fact2.attribute == "hallucinated metric"
         assert "grounding_warning" in fact2.extra
         assert fact2.confidence <= 0.5
+
+
+def test_temporal_grounding_validation():
+    """
+    CRITICAL (Case 4): Verifies that validate_temporal_grounding eliminates
+    hallucinated quarters/years when chunks lack column headers or period labels.
+    """
+    # Chunk 45: Headerless card box of sort centers
+    chunk_headerless = "Automated sort centers\n21\n24\n30\n29"
+
+    # LLM hallucinated Q1 FY24 -> MUST be caught and stripped to None
+    is_g1, as_of1 = validate_temporal_grounding("Q1 FY24", chunk_headerless)
+    assert is_g1 is False
+    assert as_of1 is None
+
+    # LLM hallucinated Q4 FY24 -> MUST be caught and stripped to None
+    is_g2, as_of2 = validate_temporal_grounding("Q4 FY24", chunk_headerless)
+    assert is_g2 is False
+    assert as_of2 is None
+
+    # Chunk 40: Legitimate table with explicit period header
+    chunk_table = "As of end of / for the period Q4 FY22 | Q4 FY23 | Q3 FY24 | Q4 FY24 Pin-code reach | 18,793"
+
+    # Legitimate Q4 FY24 -> grounded and preserved
+    is_g3, as_of3 = validate_temporal_grounding("Q4 FY24", chunk_table)
+    assert is_g3 is True
+    assert as_of3 == "Q4 FY24"
+
+    # Legitimate Q4 FY22 -> grounded and preserved
+    is_g4, as_of4 = validate_temporal_grounding("Q4 FY22", chunk_table)
+    assert is_g4 is True
+    assert as_of4 == "Q4 FY22"
+
+    # Prose with explicit filing date
+    chunk_prospectus = "As of June 30, 2021, we covered 17,488 pin codes across India."
+    is_g5, as_of5 = validate_temporal_grounding("June 30, 2021", chunk_prospectus)
+    assert is_g5 is True
+    assert as_of5 == "June 30, 2021"
+
+    # None as_of is always valid (no claim made)
+    is_g6, as_of6 = validate_temporal_grounding(None, chunk_headerless)
+    assert is_g6 is True
+    assert as_of6 is None
+
+
+def test_checkpointing_and_resumption(tmp_path):
+    """
+    Verifies that batch extraction saves checkpoints atomically,
+    and resumes without re-processing completed chunks.
+    """
+    sample_pdf = Path("data/samples/delhivery/03-delhivery-q4-fy24-earnings-presentation.pdf")
+    if not sample_pdf.exists():
+        pytest.skip("Sample PDF not found for checkpointing test")
+
+    mock_fact = ExtractedFact(
+        entity="Delhivery",
+        attribute="Test Metric",
+        value="100",
+        unit="count",
+        normalized_value=100.0,
+        normalized_unit="count",
+        as_of=None,
+        scope=None,
+        evidence_text="Pin-code reach",
+        confidence=0.99,
+        extra={},
+    )
+
+    cp_dir = tmp_path / "checkpoints"
+    call_counts = {"calls": 0}
+
+    def mock_extract(chunk, **kwargs):
+        call_counts["calls"] += 1
+        return [mock_fact]
+
+    # Pass 1: Run with max_chunks=3 (processes 3 chunks, saves checkpoint)
+    with patch("backend.extract.extract_facts_from_chunk", side_effect=mock_extract):
+        facts_pass1 = extract_document_facts(
+            pdf_path=sample_pdf,
+            doc_id="test-resumable-doc",
+            max_chunks=3,
+            checkpoint_dir=cp_dir,
+            resume=True,
+            rpm=0,
+            verbose=False,
+        )
+
+    assert len(facts_pass1) == 3
+    assert call_counts["calls"] == 3
+
+    # Confirm checkpoint file exists on disk
+    cp_file = cp_dir / "test-resumable-doc.checkpoint.json"
+    assert cp_file.exists()
+    cp_data = load_checkpoint(cp_file)
+    assert cp_data["doc_id"] == "test-resumable-doc"
+    assert len(cp_data["completed_indices"]) == 3
+    assert len(cp_data["facts"]) == 3
+
+    # Pass 2: Resume with max_chunks=3 (all 3 chunks already completed in checkpoint!)
+    call_counts["calls"] = 0
+    with patch("backend.extract.extract_facts_from_chunk", side_effect=mock_extract):
+        facts_pass2 = extract_document_facts(
+            pdf_path=sample_pdf,
+            doc_id="test-resumable-doc",
+            max_chunks=3,
+            checkpoint_dir=cp_dir,
+            resume=True,
+            rpm=0,
+            verbose=False,
+        )
+
+    # All 3 chunks should be skipped (0 new LLM calls), facts restored from checkpoint!
+    assert call_counts["calls"] == 0
+    assert len(facts_pass2) == 3
+    assert facts_pass2[0].attribute == "Test Metric"
+
+
+def test_rate_limit_backoff_retry():
+    """
+    Verifies that extract_facts_from_chunk intercepts 429 rate limit exceptions,
+    sleeps with exponential backoff, and succeeds when the API recovers.
+    """
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = json.dumps({
+        "facts": [
+            {
+                "entity": "Delhivery",
+                "attribute": "Active customers",
+                "value": "30000",
+                "unit": "count",
+                "normalized_value": 30000.0,
+                "normalized_unit": "count",
+                "as_of": None,
+                "scope": None,
+                "evidence_text": "Delhivery active customers 30000",
+                "confidence": 0.95,
+                "extra": [],
+            }
+        ]
+    })
+
+    attempts = {"count": 0}
+
+    def flaky_generate(**kwargs):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: Rate limit exceeded")
+        return mock_response
+
+    mock_client.models.generate_content.side_effect = flaky_generate
+
+    chunk: Chunk = {
+        "doc_id": "test",
+        "page_number": 1,
+        "text": "Delhivery active customers 30000",
+        "chunk_type": "text",
+    }
+
+    with patch("time.sleep", return_value=None) as mock_sleep:
+        facts = extract_facts_from_chunk(
+            chunk=chunk,
+            client=mock_client,
+            provider="gemini",
+            max_retries=5,
+            initial_backoff=1.0,
+        )
+
+        assert attempts["count"] == 3
+        assert mock_sleep.call_count == 2
+        assert len(facts) == 1
+        assert facts[0].entity == "Delhivery"
+        assert facts[0].normalized_value == 30000.0
+

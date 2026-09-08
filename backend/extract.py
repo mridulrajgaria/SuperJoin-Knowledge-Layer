@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -49,6 +50,8 @@ Rules:
    - 'normalized_value': Standardized numeric representation of the value (as a float, e.g., 8141.74 for '8,141.74 Cr', 6.5 for '6.50%', 0.082 for '8.2%'), or null if qualitative/non-numeric.
    - 'normalized_unit': Canonical/standardized unit symbol or denomination (e.g., 'INR', 'USD', '%', 'count', 'ratio', 'sq_ft'), or null if not applicable.
    - 'as_of': The temporal period or effective date the fact refers to (e.g., 'FY24', 'Q4 FY24', 'March 31, 2024', or null if not time-bound).
+     * STRICT TEMPORAL GROUNDING: 'as_of' MUST be explicitly stated within the chunk text itself (or verified directly in the table header).
+     * If a chunk contains a sequence of numbers/metrics without period labels or column headers, DO NOT guess or extrapolate quarters or fiscal years (e.g. NEVER invent Q1/Q2/Q3/Q4 when headers are missing). Set 'as_of' to null!
    - 'scope': The qualifying scope or segment if specified (e.g., 'consolidated', 'standalone', 'urban', 'rural', or null).
    - 'confidence': Your confidence score between 0.0 and 1.0 that the fact is accurately stated and extracted.
    - 'extra': A flexible key-value list for domain-specific qualifiers, footnotes, or accounting notes that do not fit into the standard fields.
@@ -139,6 +142,131 @@ def validate_evidence_grounding(evidence_text: str, source_text: str) -> Tuple[b
     return is_grounded, ratio
 
 
+def validate_temporal_grounding(as_of: Optional[str], source_text: str) -> Tuple[bool, Optional[str]]:
+    """
+    Verifies that the extracted `as_of` temporal period is genuinely grounded in the source chunk,
+    preventing LLM hallucination of quarters (e.g. fabricating Q1-Q4 FY24 on headerless tables).
+
+    Returns:
+        (is_grounded, cleaned_as_of)
+        - is_grounded: True if temporal markers are present in source chunk or as_of is None.
+        - cleaned_as_of: The original as_of if grounded, or None if ungrounded.
+    """
+    if not as_of or not as_of.strip():
+        return True, None
+
+    as_of_clean = as_of.strip()
+    norm_source = normalize_whitespace(source_text)
+
+    # 1. Direct normalized match
+    if normalize_whitespace(as_of_clean) in norm_source:
+        return True, as_of_clean
+
+    # 2. Extract temporal tokens
+    quarter_match = re.search(r"\b(Q[1-4])\b", as_of_clean, re.IGNORECASE)
+    fy_match = re.search(r"\b(FY\s*\d{2,4}|\d{4}[-–]\d{2,4})\b", as_of_clean, re.IGNORECASE)
+    year_match = re.search(r"\b(20\d{2})\b", as_of_clean)
+    month_match = re.search(
+        r"\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+        as_of_clean,
+        re.IGNORECASE,
+    )
+
+    temporal_tokens_checked = []
+
+    # If a quarter was specified (e.g. Q1, Q2, Q3, Q4), it MUST be in the source chunk
+    if quarter_match:
+        q_token = quarter_match.group(1).lower()
+        temporal_tokens_checked.append(q_token)
+        if not re.search(rf"\b{re.escape(q_token)}\b", norm_source, re.IGNORECASE):
+            return False, None
+
+    # If a fiscal year or multi-year span was specified, check presence
+    if fy_match:
+        fy_raw = fy_match.group(1)
+        fy_token = re.sub(r"\s+", "", fy_raw).lower()
+        temporal_tokens_checked.append(fy_token)
+        source_condensed = norm_source.replace(" ", "")
+
+        matched_fy = False
+        if fy_token in source_condensed or re.search(rf"\b{re.escape(fy_token)}\b", norm_source, re.IGNORECASE):
+            matched_fy = True
+        else:
+            # Check if 2-digit FY matches e.g. FY24 matches 2023-24, 2024, or fy 24
+            m_yr2 = re.search(r"FY(\d{2})", fy_token, re.IGNORECASE)
+            if m_yr2:
+                yr2 = m_yr2.group(1)
+                if re.search(rf"(\bfy\s*{yr2}\b|20\d\d[-–]{yr2}|20{yr2})", norm_source, re.IGNORECASE):
+                    matched_fy = True
+        if not matched_fy:
+            return False, None
+
+    # If a 4-digit calendar year was specified without FY
+    if year_match and not fy_match:
+        yr = year_match.group(1)
+        temporal_tokens_checked.append(yr)
+        if yr not in norm_source:
+            return False, None
+
+    # If a month was specified
+    if month_match:
+        mo = month_match.group(1).lower()
+        temporal_tokens_checked.append(mo)
+        if not re.search(rf"\b{re.escape(mo)}\b", norm_source, re.IGNORECASE):
+            return False, None
+
+    # If no specific patterns matched but as_of is non-empty, check word overlap
+    if not temporal_tokens_checked:
+        tokens = [w for w in re.findall(r"\w+", as_of_clean.lower()) if len(w) > 1]
+        if tokens and not any(t in norm_source for t in tokens):
+            return False, None
+
+    return True, as_of_clean
+
+
+def get_checkpoint_path(doc_id: str, checkpoint_dir: Optional[Path] = None) -> Path:
+    """Returns the checkpoint file path for a document."""
+    cp_dir = checkpoint_dir or (PROJECT_ROOT / "data" / "extracted" / ".checkpoints")
+    cp_dir.mkdir(parents=True, exist_ok=True)
+    return cp_dir / f"{doc_id}.checkpoint.json"
+
+
+def load_checkpoint(checkpoint_path: Path) -> Dict[str, Any]:
+    """Loads existing extraction checkpoint if valid, otherwise returns an empty dict."""
+    if checkpoint_path.exists():
+        try:
+            return json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"Warning: Failed to load checkpoint {checkpoint_path}: {e}", file=sys.stderr)
+            return {}
+    return {}
+
+
+def save_checkpoint(
+    checkpoint_path: Path,
+    doc_id: str,
+    pdf_path: str,
+    total_chunks: int,
+    completed_indices: List[int],
+    facts: List[Fact],
+    is_completed: bool = False,
+) -> None:
+    """Atomically saves checkpoint to disk using a temporary file swap."""
+    data = {
+        "doc_id": doc_id,
+        "pdf_path": str(pdf_path),
+        "total_chunks": total_chunks,
+        "completed_count": len(completed_indices),
+        "completed_indices": sorted(list(set(completed_indices))),
+        "facts": [f.model_dump() for f in facts],
+        "is_completed": is_completed,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    tmp_path = checkpoint_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(checkpoint_path)
+
+
 def get_llm_client() -> Tuple[str, Any]:
     """
     Detects and initializes an LLM client based on available environment variables.
@@ -189,9 +317,12 @@ def extract_facts_from_chunk(
     client: Optional[Any] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    max_retries: int = 5,
+    initial_backoff: float = 4.0,
 ) -> List[ExtractedFact]:
     """
     Calls LLM with structured output to extract facts from a single chunk.
+    Includes rate-limit awareness with exponential backoff on 429/RESOURCE_EXHAUSTED errors.
     """
     if client is None or provider is None:
         provider, client = get_llm_client()
@@ -209,55 +340,71 @@ def extract_facts_from_chunk(
         "Remember: 'entity' MUST ALWAYS be the real-world named subject (e.g. company, country, organization) and NEVER a metric type, equipment, or category (e.g., '46-ft tractors', 'Fleet', 'Active customers', 'Pin codes' belong in 'attribute' under entity 'Delhivery')."
     )
 
-    if provider == "gemini":
-        from google.genai import types
+    for attempt in range(max_retries):
+        try:
+            if provider == "gemini":
+                from google.genai import types
 
-        model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.5-flash"
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[
-                {"role": "user", "parts": [{"text": GENERIC_EXTRACTION_SYSTEM_PROMPT + "\n\n" + chunk_prompt}]}
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=GeminiChunkFactsExtraction,
-                temperature=0.0,
-            ),
-        )
-        gemini_parsed = GeminiChunkFactsExtraction.model_validate_json(response.text)
-        return [
-            ExtractedFact(
-                entity=f.entity,
-                attribute=f.attribute,
-                value=f.value,
-                unit=f.unit,
-                normalized_value=f.normalized_value,
-                normalized_unit=f.normalized_unit,
-                as_of=f.as_of,
-                scope=f.scope,
-                evidence_text=f.evidence_text,
-                confidence=f.confidence,
-                extra={item.key: item.value for item in f.extra},
-            )
-            for f in gemini_parsed.facts
-        ]
+                model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.6-flash"
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        {"role": "user", "parts": [{"text": GENERIC_EXTRACTION_SYSTEM_PROMPT + "\n\n" + chunk_prompt}]}
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=GeminiChunkFactsExtraction,
+                        temperature=0.0,
+                    ),
+                )
+                gemini_parsed = GeminiChunkFactsExtraction.model_validate_json(response.text)
+                return [
+                    ExtractedFact(
+                        entity=f.entity,
+                        attribute=f.attribute,
+                        value=f.value,
+                        unit=f.unit,
+                        normalized_value=f.normalized_value,
+                        normalized_unit=f.normalized_unit,
+                        as_of=f.as_of,
+                        scope=f.scope,
+                        evidence_text=f.evidence_text,
+                        confidence=f.confidence,
+                        extra={item.key: item.value for item in f.extra},
+                    )
+                    for f in gemini_parsed.facts
+                ]
 
-    elif provider == "openai":
-        model_name = model or "gpt-4o-mini"
-        completion = client.beta.chat.completions.parse(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": GENERIC_EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": chunk_prompt},
-            ],
-            response_format=ChunkFactsExtraction,
-            temperature=0.0,
-        )
-        parsed = completion.choices[0].message.parsed
-        return parsed.facts if parsed else []
+            elif provider == "openai":
+                model_name = model or "gpt-4o-mini"
+                completion = client.beta.chat.completions.parse(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": GENERIC_EXTRACTION_SYSTEM_PROMPT},
+                        {"role": "user", "content": chunk_prompt},
+                    ],
+                    response_format=ChunkFactsExtraction,
+                    temperature=0.0,
+                )
+                parsed = completion.choices[0].message.parsed
+                return parsed.facts if parsed else []
 
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+        except Exception as err:
+            err_lower = str(err).lower()
+            is_rate_limit = any(k in err_lower for k in ["429", "resource_exhausted", "quota", "too many requests"])
+            if is_rate_limit and attempt < max_retries - 1:
+                sleep_secs = min(60.0, initial_backoff * (2 ** attempt))
+                print(
+                    f"Warning: Rate limit hit (429) on chunk (p{chunk.get('page_number')}). "
+                    f"Backing off for {sleep_secs:.1f}s (retry {attempt + 1}/{max_retries})...",
+                    file=sys.stderr,
+                )
+                time.sleep(sleep_secs)
+                continue
+            raise err
 
 
 def extract_document_facts(
@@ -269,17 +416,25 @@ def extract_document_facts(
     max_chunks: Optional[int] = None,
     start_page: Optional[int] = None,
     end_page: Optional[int] = None,
+    resume: bool = True,
+    rpm: float = 15.0,
+    checkpoint_dir: Optional[Path] = None,
+    verbose: bool = True,
 ) -> List[Fact]:
     """
-    Runs end-to-end ingestion and structured fact extraction on a PDF.
+    Runs rate-limit-aware, resumable batch fact extraction on a PDF document.
 
-    1. Ingests PDF into chunks.
-    2. Applies page range and cheap heuristic filtering.
-    3. Calls LLM with structured output.
-    4. Validates evidence grounding against source chunks.
-    5. Returns grounded Fact models.
+    Features:
+    1. Ingests PDF and applies cheap heuristic filtering.
+    2. Checkpoints progress after every chunk to enable seamless resume.
+    3. Handles 429 rate limit errors with exponential backoff.
+    4. Enforces temporal grounding to eliminate hallucinated quarters/years.
+    5. Paces API requests to respect provider RPM limits.
     """
-    raw_chunks = extract_chunks(pdf_path, doc_id=doc_id)
+    pdf_file = Path(pdf_path)
+    effective_doc_id = doc_id if doc_id else pdf_file.stem
+
+    raw_chunks = extract_chunks(pdf_file, doc_id=effective_doc_id)
     if start_page is not None:
         raw_chunks = [c for c in raw_chunks if c["page_number"] >= start_page]
     if end_page is not None:
@@ -290,42 +445,160 @@ def extract_document_facts(
     if max_chunks is not None and max_chunks > 0:
         filtered_chunks = filtered_chunks[:max_chunks]
 
+    total_chunks = len(filtered_chunks)
+    cp_path = get_checkpoint_path(effective_doc_id, checkpoint_dir)
+    completed_indices: set = set()
     facts: List[Fact] = []
 
-    for chunk in filtered_chunks:
-        try:
-            extracted_facts = extract_facts_from_chunk(
-                chunk=chunk,
-                client=client,
-                provider=provider,
-                model=model,
+    # Resume from checkpoint if available
+    if resume and cp_path.exists():
+        cp_data = load_checkpoint(cp_path)
+        if cp_data.get("doc_id") == effective_doc_id:
+            completed_indices = set(cp_data.get("completed_indices", []))
+            raw_facts = cp_data.get("facts", [])
+            facts = [Fact.model_validate(f) for f in raw_facts]
+            if verbose:
+                print(
+                    f"Resuming '{effective_doc_id}' from checkpoint: "
+                    f"{len(completed_indices)}/{total_chunks} chunks already processed "
+                    f"({len(facts)} facts recovered).",
+                    file=sys.stderr,
+                )
+
+    try:
+        for idx, chunk in enumerate(filtered_chunks):
+            if idx in completed_indices:
+                continue
+
+            t_start = time.time()
+            if verbose:
+                print(
+                    f"[{effective_doc_id}] Processing chunk {idx + 1}/{total_chunks} "
+                    f"(p{chunk['page_number']}, {chunk['chunk_type']})...",
+                    file=sys.stderr,
+                    end="\r",
+                )
+
+            try:
+                extracted_facts = extract_facts_from_chunk(
+                    chunk=chunk,
+                    client=client,
+                    provider=provider,
+                    model=model,
+                )
+            except Exception as err:
+                err_lower = str(err).lower()
+                is_rate_limit = any(k in err_lower for k in ["429", "resource_exhausted", "quota"])
+                if is_rate_limit:
+                    # Save checkpoint before raising on exhausted daily quota
+                    save_checkpoint(
+                        checkpoint_path=cp_path,
+                        doc_id=effective_doc_id,
+                        pdf_path=str(pdf_file),
+                        total_chunks=total_chunks,
+                        completed_indices=list(completed_indices),
+                        facts=facts,
+                        is_completed=False,
+                    )
+                    print(
+                        f"\n[RATE LIMIT / QUOTA EXHAUSTED] Paused at chunk {idx + 1}/{total_chunks}. "
+                        f"Progress safely checkpointed to {cp_path}.\n"
+                        f"Run again with --resume to continue.",
+                        file=sys.stderr,
+                    )
+                    raise
+                else:
+                    print(
+                        f"\nWarning: Chunk {idx + 1} (page {chunk['page_number']}) extraction failed: {err}",
+                        file=sys.stderr,
+                    )
+                    completed_indices.add(idx)
+                    save_checkpoint(
+                        checkpoint_path=cp_path,
+                        doc_id=effective_doc_id,
+                        pdf_path=str(pdf_file),
+                        total_chunks=total_chunks,
+                        completed_indices=list(completed_indices),
+                        facts=facts,
+                        is_completed=False,
+                    )
+                    continue
+
+            for ef in extracted_facts:
+                # 1. Validate evidence grounding
+                is_grounded, grounding_score = validate_evidence_grounding(
+                    evidence_text=ef.evidence_text,
+                    source_text=chunk["text"],
+                )
+
+                # 2. Validate temporal grounding (Option b: prevent fabricated quarters/dates)
+                temporal_grounded, cleaned_as_of = validate_temporal_grounding(
+                    as_of=ef.as_of,
+                    source_text=chunk["text"],
+                )
+
+                fact = Fact.from_extracted(
+                    extracted=ef,
+                    source_doc_id=chunk["doc_id"],
+                    page_number=chunk["page_number"],
+                )
+
+                # Record grounding metadata
+                if not is_grounded:
+                    fact.extra["grounding_warning"] = "Evidence text not strictly grounded in source chunk"
+                    fact.confidence = round(min(fact.confidence, 0.5), 2)
+                else:
+                    fact.extra["grounding_score"] = round(grounding_score, 2)
+
+                if not temporal_grounded and ef.as_of:
+                    fact.extra["as_of_hallucination_detected"] = f"Removed ungrounded as_of '{ef.as_of}'"
+                    fact.as_of = None
+                else:
+                    fact.as_of = cleaned_as_of
+
+                facts.append(fact)
+
+            completed_indices.add(idx)
+            save_checkpoint(
+                checkpoint_path=cp_path,
+                doc_id=effective_doc_id,
+                pdf_path=str(pdf_file),
+                total_chunks=total_chunks,
+                completed_indices=list(completed_indices),
+                facts=facts,
+                is_completed=(len(completed_indices) == total_chunks),
             )
-        except Exception as err:
-            # Continue extracting from remaining chunks on isolated failure
-            print(f"Warning: Extraction error on page {chunk['page_number']}: {err}", file=sys.stderr)
-            continue
 
-        for ef in extracted_facts:
-            # Validate evidence grounding
-            is_grounded, grounding_score = validate_evidence_grounding(
-                evidence_text=ef.evidence_text,
-                source_text=chunk["text"],
-            )
+            # Pacing delay to adhere strictly to rate limits (e.g. 15 RPM = 4.0s per request)
+            if rpm > 0 and idx < total_chunks - 1:
+                elapsed = time.time() - t_start
+                delay = (60.0 / rpm) - elapsed
+                if delay > 0:
+                    time.sleep(delay)
 
-            fact = Fact.from_extracted(
-                extracted=ef,
-                source_doc_id=chunk["doc_id"],
-                page_number=chunk["page_number"],
-            )
+    except KeyboardInterrupt:
+        save_checkpoint(
+            checkpoint_path=cp_path,
+            doc_id=effective_doc_id,
+            pdf_path=str(pdf_file),
+            total_chunks=total_chunks,
+            completed_indices=list(completed_indices),
+            facts=facts,
+            is_completed=False,
+        )
+        print(
+            f"\n[INTERRUPTED] Progress checkpointed: {len(completed_indices)}/{total_chunks} chunks completed. "
+            f"Resume anytime with --resume.",
+            file=sys.stderr,
+        )
+        raise
 
-            # Record grounding metadata
-            if not is_grounded:
-                fact.extra["grounding_warning"] = "Evidence text not strictly grounded in source chunk"
-                fact.confidence = round(min(fact.confidence, 0.5), 2)
-            else:
-                fact.extra["grounding_score"] = round(grounding_score, 2)
-
-            facts.append(fact)
+    if verbose:
+        print(
+            f"\nExtraction complete for '{effective_doc_id}': "
+            f"{total_chunks} chunks processed, {len(facts)} facts extracted.",
+            file=sys.stderr,
+        )
 
     return facts
 
@@ -336,7 +609,7 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(
-        description="Extract structured facts from a PDF document using LLM structured outputs."
+        description="Extract structured facts from a PDF document with rate-limit handling and checkpointing."
     )
     parser.add_argument("pdf_path", type=str, help="Path to the PDF file to extract facts from.")
     parser.add_argument(
@@ -368,6 +641,24 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional 1-indexed ending page number to extract from.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=True,
+        help="Resume from existing checkpoint if available (default: True).",
+    )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Do not resume; start extraction from the beginning.",
+    )
+    parser.add_argument(
+        "--rpm",
+        type=float,
+        default=15.0,
+        help="Pacing rate limit in requests per minute (default: 15.0 for free tier). Set 0 to disable artificial sleep.",
     )
     parser.add_argument(
         "-o",
@@ -406,6 +697,8 @@ def main() -> None:
             max_chunks=args.max_chunks,
             start_page=args.start_page,
             end_page=args.end_page,
+            resume=args.resume,
+            rpm=args.rpm,
         )
 
         facts_dicts = [f.model_dump() for f in facts]
@@ -423,3 +716,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
