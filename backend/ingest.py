@@ -1,4 +1,4 @@
-﻿"""
+"""
 PDF Ingestion Module
 
 Extracts page-anchored text and table chunks from PDF documents
@@ -33,40 +33,80 @@ class Chunk(TypedDict):
     chunk_type: str
 
 
-def _format_table_raw(table_obj: Any, page: pymupdf.Page) -> str:
+def _format_table_raw(table_obj: Any, page: pymupdf.Page) -> Tuple[str, List[pymupdf.Rect]]:
     """
-    Extracts raw text from a detected table.
-    Prefers structured markdown or row-separated text;
-    falls back to clipped page text if cell extraction is empty.
+    Extracts raw text from a detected table, robustly preserving row labels on borderless tables.
+    Returns:
+        (formatted_text, absorbed_rectangles)
     """
+    t_bbox = getattr(table_obj, "bbox", None)
+    if not t_bbox:
+        return "", []
+
+    t_rect = pymupdf.Rect(t_bbox)
+    extracted = table_obj.extract() or []
+
+    # Detect if table has missing first-column cells (e.g. borderless row labels)
+    has_empty_col0 = any(
+        r and len(r) > 0 and (r[0] is None or str(r[0]).strip() == "")
+        for r in extracted
+    )
+
+    # Detect if to_markdown() produced duplicate repeated header labels down col 0
+    md_text = ""
     try:
-        md = table_obj.to_markdown()
-        if md and md.strip():
-            return md.strip()
+        md_text = table_obj.to_markdown() or ""
     except Exception:
         pass
 
-    try:
-        extracted = table_obj.extract()
-        if extracted:
-            rows = []
-            for row in extracted:
-                cells = [str(c).strip() if c is not None else "" for c in row]
-                if any(cells):
-                    rows.append(" | ".join(cells))
-            if rows:
-                return "\n".join(rows)
-    except Exception:
-        pass
+    repeated_header = False
+    if md_text:
+        lines = [l for l in md_text.splitlines() if l.startswith("|")]
+        if len(lines) >= 3:
+            first_cells = [l.split("|")[1].strip() for l in lines[2:]]
+            if len(first_cells) >= 3 and len(set(first_cells)) == 1:
+                repeated_header = True
 
-    # Fallback to clipped page text inside the table's bounding box
-    bbox = getattr(table_obj, "bbox", None)
-    if bbox:
-        raw = page.get_text("text", clip=bbox).strip()
-        if raw:
-            return raw
+    absorbed_rects = [t_rect]
 
-    return ""
+    # If borderless or duplicated, merge adjacent and overlapping text blocks
+    if has_empty_col0 or repeated_header:
+        expanded_rect = pymupdf.Rect(
+            max(0, t_rect.x0 - 120),
+            t_rect.y0 - 5,
+            t_rect.x1 + 10,
+            t_rect.y1 + 5,
+        )
+        blocks = []
+        for b in page.get_text("blocks"):
+            b_rect = pymupdf.Rect(b[:4])
+            if not (b_rect & expanded_rect).is_empty and b[6] == 0:
+                blocks.append((b_rect, b[4].strip()))
+                absorbed_rects.append(b_rect)
+
+        blocks.sort(key=lambda item: item[0].y0)
+
+        merged_rows = []
+        for _, text in blocks:
+            raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+            if not raw_lines:
+                continue
+            merged_rows.append(" | ".join(raw_lines))
+
+        if merged_rows:
+            return "\n".join(merged_rows), absorbed_rects
+
+    # Standard table fallback
+    if md_text and md_text.strip():
+        return md_text.strip(), absorbed_rects
+    elif extracted:
+        rows = [
+            " | ".join(str(c).strip() if c is not None else "" for c in r)
+            for r in extracted
+        ]
+        return "\n".join(rows), absorbed_rects
+
+    return page.get_text("text", clip=t_rect).strip(), absorbed_rects
 
 
 def extract_chunks(
@@ -111,11 +151,9 @@ def extract_chunks(
                 tables = []
 
             for tab in tables:
-                tab_bbox = getattr(tab, "bbox", None)
-                if tab_bbox:
-                    table_rects.append(pymupdf.Rect(tab_bbox))
+                raw_table_text, absorbed = _format_table_raw(tab, page)
+                table_rects.extend(absorbed)
 
-                raw_table_text = _format_table_raw(tab, page)
                 if raw_table_text:
                     chunks.append(
                         {

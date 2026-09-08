@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for the PDF Ingestion Module.
 Uses sample PDFs placed in data/samples/.
 """
@@ -71,6 +71,14 @@ def test_extract_chunks_table_detection():
     assert "|" in sample_table["text"] or "\n" in sample_table["text"], (
         "Table chunk should retain row or markdown separator structure"
     )
+
+    # Verify borderless table row labels on page 8 are merged
+    p8_tables = [c for c in table_chunks if c["page_number"] == 8]
+    if p8_tables:
+        p8_combined = " ".join(t["text"] for t in p8_tables)
+        assert "Pin-code reach" in p8_combined, "Borderless table must retain Pin-code reach row label"
+        assert "Active Customers" in p8_combined, "Borderless table must retain Active Customers row label"
+        assert "Infrastructure" in p8_combined, "Borderless table must retain Infrastructure row label"
 
 
 def test_custom_doc_id_and_page_anchoring():
