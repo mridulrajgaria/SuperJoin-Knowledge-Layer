@@ -7,8 +7,13 @@ Adheres to the rule: "Don't guess if it's ambiguous — leave null rather than f
 """
 
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.schema import Fact
 

@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,6 +11,10 @@ ENV/
 
 # Environment Variables
 .env
+
+# Database Storage
+*.db
+*.sqlite3
 
 # Testing & Coverage
 .pytest_cache/
