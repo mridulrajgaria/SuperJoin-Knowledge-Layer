@@ -278,3 +278,82 @@ def extract_document_facts(
     return facts
 
 
+def main() -> None:
+    # Ensure UTF-8 output encoding on Windows consoles
+    if sys.stdout.encoding != "utf-8" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    parser = argparse.ArgumentParser(
+        description="Extract structured facts from a PDF document using LLM structured outputs."
+    )
+    parser.add_argument("pdf_path", type=str, help="Path to the PDF file to extract facts from.")
+    parser.add_argument(
+        "--doc-id",
+        type=str,
+        default=None,
+        help="Optional document ID (defaults to filename stem).",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Optional LLM model override (e.g., 'gemini-2.5-flash' or 'gpt-4o-mini').",
+    )
+    parser.add_argument(
+        "--max-chunks",
+        type=int,
+        default=None,
+        help="Optional limit on number of chunks to process (useful for testing).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        help="Optional custom output path (defaults to data/extracted/<doc_id>.json).",
+    )
+    parser.add_argument(
+        "--indent",
+        type=int,
+        default=2,
+        help="JSON indentation level for stdout (default: 2).",
+    )
+
+    args = parser.parse_args()
+
+    pdf_file = Path(args.pdf_path)
+    if not pdf_file.exists():
+        print(f"Error: File not found: {pdf_file}", file=sys.stderr)
+        sys.exit(1)
+
+    effective_doc_id = args.doc_id if args.doc_id else pdf_file.stem
+
+    # Determine output path
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = Path("data") / "extracted" / f"{effective_doc_id}.json"
+
+    try:
+        facts = extract_document_facts(
+            pdf_path=pdf_file,
+            doc_id=effective_doc_id,
+            model=args.model,
+            max_chunks=args.max_chunks,
+        )
+
+        facts_dicts = [f.model_dump() for f in facts]
+        json_output = json.dumps(facts_dicts, ensure_ascii=False, indent=args.indent)
+
+        # Save to data/extracted/<doc_id>.json
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json_output, encoding="utf-8")
+
+        print(json_output)
+    except Exception as exc:
+        print(f"Error during extraction: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
