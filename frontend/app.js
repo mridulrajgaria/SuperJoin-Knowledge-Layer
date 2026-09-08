@@ -43,9 +43,6 @@ const elements = {
   statContradicts: document.getElementById('stat-contradicts'),
   docInventoryMeta: document.getElementById('doc-inventory-meta'),
   tbodyDocuments: document.getElementById('tbody-documents'),
-  dashboardDropzone: document.getElementById('dashboard-dropzone'),
-  fileInputDashboard: document.getElementById('file-input-dashboard'),
-  dashboardUploadFeedback: document.getElementById('dashboard-upload-feedback'),
 
   // Facts View
   filterEntity: document.getElementById('filter-entity'),
@@ -173,15 +170,6 @@ function attachEventListeners() {
   elements.modalDropzone.addEventListener('drop', (e) => {
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleFileSelect(e.dataTransfer.files[0]);
-    }
-  });
-
-  // Dashboard dropzone
-  elements.dashboardDropzone.addEventListener('click', () => elements.fileInputDashboard.click());
-  elements.fileInputDashboard.addEventListener('change', (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleFileSelect(e.target.files[0]);
-      openUploadModal();
     }
   });
 }
@@ -564,7 +552,6 @@ function closeUploadModal() {
 function resetModal() {
   state.selectedUploadFile = null;
   elements.fileInputModal.value = '';
-  elements.fileInputDashboard.value = '';
   elements.modalFileName.textContent = 'Click or drag PDF here';
   elements.btnModalSubmit.disabled = true;
 
@@ -573,8 +560,19 @@ function resetModal() {
   elements.modalBodyResult.style.display = 'none';
 
   elements.btnModalCancel.style.display = 'inline-flex';
+  elements.btnModalCancel.textContent = 'Cancel';
   elements.btnModalSubmit.style.display = 'inline-flex';
   elements.btnModalViewFacts.style.display = 'none';
+
+  elements.resultStatusBox.style.backgroundColor = 'var(--bg-corroborates)';
+  elements.resultStatusBox.style.borderColor = 'var(--border-corroborates)';
+  const icon = elements.resultStatusBox.querySelector('i');
+  if (icon) {
+    icon.setAttribute('data-lucide', 'check-circle');
+    icon.style.color = 'var(--color-corroborates)';
+  }
+  elements.resultTitle.style.color = 'var(--color-corroborates)';
+  initIcons();
 }
 
 function handleFileSelect(file) {
@@ -621,10 +619,33 @@ async function executeUpload() {
     elements.btnModalCancel.disabled = false;
     elements.btnModalCancel.textContent = 'Close';
     elements.btnModalSubmit.style.display = 'none';
-    elements.btnModalViewFacts.style.display = 'inline-flex';
 
-    elements.resultTitle.textContent = 'Pipeline Completed Successfully';
-    elements.resultDesc.textContent = `Document '${result.doc_id}' parsed, stored, and cross-referenced.`;
+    if (result.facts_extracted === 0) {
+      elements.resultStatusBox.style.backgroundColor = 'var(--bg-reconciled)';
+      elements.resultStatusBox.style.borderColor = 'var(--border-reconciled)';
+      const icon = elements.resultStatusBox.querySelector('i');
+      if (icon) {
+        icon.setAttribute('data-lucide', 'alert-triangle');
+        icon.style.color = 'var(--color-reconciled)';
+      }
+      elements.resultTitle.textContent = 'No Facts Extracted';
+      elements.resultTitle.style.color = 'var(--color-reconciled)';
+      elements.resultDesc.textContent =
+        'Document processed but no facts were extracted — the PDF may have no extractable text or no factual content in a format the system recognizes.';
+      elements.btnModalViewFacts.style.display = 'none';
+    } else {
+      elements.resultStatusBox.style.backgroundColor = 'var(--bg-corroborates)';
+      elements.resultStatusBox.style.borderColor = 'var(--border-corroborates)';
+      const icon = elements.resultStatusBox.querySelector('i');
+      if (icon) {
+        icon.setAttribute('data-lucide', 'check-circle');
+        icon.style.color = 'var(--color-corroborates)';
+      }
+      elements.resultTitle.textContent = 'Pipeline Completed Successfully';
+      elements.resultTitle.style.color = 'var(--color-corroborates)';
+      elements.resultDesc.textContent = `Document '${result.doc_id}' parsed, stored, and cross-referenced.`;
+      elements.btnModalViewFacts.style.display = 'inline-flex';
+    }
 
     elements.resultMetrics.innerHTML = `
       <div><strong>Document ID:</strong> ${escapeHtml(result.doc_id)}</div>
@@ -645,6 +666,8 @@ async function executeUpload() {
       closeUploadModal();
       filterByDoc(result.doc_id);
     };
+
+    initIcons();
 
     // Refresh overall workspace state
     await loadStats();

@@ -238,3 +238,28 @@ def test_upload_endpoint_invalid_file(client_with_test_db):
     )
     assert response.status_code == 400
     assert "must be a PDF" in response.json()["detail"]
+
+
+def test_upload_endpoint_zero_facts(client_with_test_db):
+    """Verifies POST /upload returns appropriate message when 0 facts are extracted."""
+    with (
+        patch("backend.api.extract_chunks", return_value=[]),
+        patch("backend.api.should_process_chunk", return_value=False),
+        patch("backend.api.upsert_facts", return_value=0),
+        patch("backend.api.link_facts", return_value=[]),
+    ):
+        file_content = b"%PDF-1.4 empty content"
+        response = client_with_test_db.post(
+            "/upload",
+            files={"file": ("empty_doc.pdf", io.BytesIO(file_content), "application/pdf")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["doc_id"] == "empty_doc"
+        assert data["facts_extracted"] == 0
+        assert data["relationships_found"] == 0
+        assert "no facts were extracted" in data["message"]
+        assert data["facts"] == []
+        assert data["relationships"] == []
+

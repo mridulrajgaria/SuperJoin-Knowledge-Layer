@@ -222,10 +222,17 @@ async def upload_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
         })
         new_relationships = []
 
+    message = (
+        f"Document '{doc_id}' parsed, stored, and cross-referenced."
+        if facts
+        else "Document processed but no facts were extracted — the PDF may have no extractable text or no factual content in a format the system recognizes."
+    )
+
     return {
         "doc_id": doc_id,
         "facts_extracted": len(facts),
         "relationships_found": len(new_relationships),
+        "message": message,
         "facts": [f.model_dump() for f in facts],
         "relationships": [r.model_dump() for r in new_relationships],
         "errors": errors,

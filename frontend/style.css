@@ -401,7 +401,7 @@ h1, h2, h3, h4, h5, h6 {
 /* Dashboard Content Grid */
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1.6fr 1fr;
+  grid-template-columns: 1fr;
   gap: 20px;
 }
 
