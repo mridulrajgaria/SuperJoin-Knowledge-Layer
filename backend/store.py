@@ -280,8 +280,18 @@ def main() -> None:
     init_db(db_path=args.db)
 
     if args.count:
-        total = get_stored_fact_count(db_path=args.db)
-        print(f"Total stored facts: {total}")
+        conn = get_connection(db_path=args.db)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT source_doc_id, page_number, count(*) FROM facts "
+            "GROUP BY source_doc_id, page_number ORDER BY source_doc_id, page_number"
+        )
+        rows = cur.fetchall()
+        total = sum(r[2] for r in rows)
+        print(f"Total stored facts: {total}\n")
+        print("Grouped by source_doc_id, page_number:")
+        for doc_id, page_num, count in rows:
+            print(f"  {doc_id} | page {page_num}: {count} facts")
         return
 
     if args.search:
