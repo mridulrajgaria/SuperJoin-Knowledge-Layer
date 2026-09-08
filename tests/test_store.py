@@ -207,6 +207,34 @@ def test_as_of_period_inference_and_backfill():
     assert backfilled[0].extra.get("as_of_inferred") is True
     assert backfilled[1].as_of == "FY22"  # preserved
 
+    # 4. Ambiguous multi-value series on same page (e.g. Sort centers: 21, 24, 30, 29 without headers)
+    ambiguous_series = [
+        Fact(
+            entity="Delhivery",
+            attribute="count of automated sort centers",
+            value="21",
+            as_of=None,
+            source_doc_id="q4-deck",
+            page_number=8,
+            evidence_text="21",
+        ),
+        Fact(
+            entity="Delhivery",
+            attribute="count of automated sort centers",
+            value="24",
+            as_of=None,
+            source_doc_id="q4-deck",
+            page_number=8,
+            evidence_text="24",
+        ),
+    ]
+    backfilled_ambiguous = backfill_facts_as_of(ambiguous_series, doc_as_of="Q4 FY24")
+    # Must NOT fabricate Q4 FY24 for both conflicting values
+    assert backfilled_ambiguous[0].as_of is None
+    assert backfilled_ambiguous[1].as_of is None
+    assert "as_of_inference_skipped" in backfilled_ambiguous[0].extra
+
+
 
 def test_nearest_neighbor_retrieval(memory_db):
     """

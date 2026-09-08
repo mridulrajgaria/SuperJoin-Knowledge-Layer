@@ -115,14 +115,32 @@ def backfill_facts_as_of(
     Backfills facts that have `as_of: None` with document-level period `doc_as_of`.
     Maintains provenance by adding audit metadata in `extra`.
     Preserves existing fact-level `as_of` without overwriting.
+    Does NOT backfill when ambiguous: if a page reports multiple conflicting values
+    for the same entity and attribute without period labels (e.g. a headerless time series),
+    it leaves as_of as null to avoid fabricating duplicate/contradictory claims for a single period.
     """
     if not doc_as_of:
         return facts
 
+    from collections import Counter
+
+    null_fact_counts = Counter(
+        (f.page_number, f.entity.lower(), f.attribute.lower())
+        for f in facts
+        if f.as_of is None or str(f.as_of).strip() == ""
+    )
+
     for f in facts:
         if f.as_of is None or str(f.as_of).strip() == "":
+            key = (f.page_number, f.entity.lower(), f.attribute.lower())
+            if null_fact_counts[key] > 1:
+                # Ambiguous series without explicit column headers: leave null!
+                f.extra["as_of_inference_skipped"] = "Multiple conflicting values on page without column headers"
+                continue
+
             f.as_of = doc_as_of
             f.extra["as_of_inferred"] = True
             f.extra["doc_as_of"] = doc_as_of
 
     return facts
+
