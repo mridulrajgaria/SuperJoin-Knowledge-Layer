@@ -121,3 +121,22 @@ def test_nonexistent_pdf_raises_error():
     """Verify proper error handling when given an invalid PDF path."""
     with pytest.raises(FileNotFoundError):
         extract_chunks("data/samples/nonexistent_file.pdf")
+
+
+def test_multi_column_paragraph_merging():
+    """Verify that multi-column pages merge consecutive line fragments into paragraph chunks."""
+    rbi_pdf = SAMPLES_DIR / "india-macroeconomy" / "02-rbi-annual-report-2024-25-excerpt.pdf"
+    if not rbi_pdf.exists():
+        pytest.skip("RBI report excerpt not found for multi-column test")
+
+    chunks = extract_chunks(rbi_pdf)
+    p10_chunks = [c for c in chunks if c["page_number"] == 10 and c["chunk_type"] == "text"]
+
+    # Raw blocks on this page were 75 lines. After paragraph merging, should be <= 6 chunks.
+    assert len(p10_chunks) <= 6, f"Expected merged paragraph chunks, got {len(p10_chunks)}"
+
+    # Verify key paragraph content is intact and unified
+    combined_text = " ".join(c["text"] for c in p10_chunks)
+    assert "primarily by increase in international gold prices" in combined_text
+    assert "liquidity adjustment facility (LAF)" in combined_text
+

@@ -109,6 +109,65 @@ def _format_table_raw(table_obj: Any, page: pymupdf.Page) -> Tuple[str, List[pym
     return page.get_text("text", clip=t_rect).strip(), absorbed_rects
 
 
+def _merge_prose_blocks(candidate_blocks: List[Any], page_width: float) -> List[str]:
+    """
+    Groups and merges fragmented text blocks into coherent paragraph chunks:
+    - Identifies multi-column vs single-column page layouts.
+    - Preserves column reading order (Column 1 top-to-bottom, then Column 2).
+    - Merges vertically contiguous same-column line fragments (gap <= 8pt).
+    """
+    if not candidate_blocks:
+        return []
+
+    midpoint = page_width / 2.0
+
+    # Determine if page has multiple columns
+    has_left = any(b[0] < midpoint - 30 and b[2] < midpoint + 20 for b in candidate_blocks)
+    has_right = any(b[0] > midpoint - 20 for b in candidate_blocks)
+
+    if has_left and has_right:
+        # Separate full-width spanning headers (e.g. titles spanning > 65% page width)
+        spanning_top = [
+            b for b in candidate_blocks
+            if (b[2] - b[0]) > page_width * 0.65 and b[1] < 120
+        ]
+        col_left = [b for b in candidate_blocks if b not in spanning_top and b[0] < midpoint]
+        col_right = [b for b in candidate_blocks if b not in spanning_top and b[0] >= midpoint]
+
+        spanning_top.sort(key=lambda b: b[1])
+        col_left.sort(key=lambda b: b[1])
+        col_right.sort(key=lambda b: b[1])
+        columns = [spanning_top, col_left, col_right]
+    else:
+        blocks_sorted = sorted(candidate_blocks, key=lambda b: (b[1], b[0]))
+        columns = [blocks_sorted]
+
+    paragraphs = []
+    for col in columns:
+        current_lines = []
+        for b in col:
+            text = b[4].strip()
+            if not text:
+                continue
+            if not current_lines:
+                current_lines.append(b)
+            else:
+                prev = current_lines[-1]
+                gap = b[1] - prev[3]
+                # Small vertical gap indicates consecutive line fragment
+                if gap <= 8.0:
+                    current_lines.append(b)
+                else:
+                    para = " ".join(item[4].strip() for item in current_lines)
+                    paragraphs.append(para)
+                    current_lines = [b]
+        if current_lines:
+            para = " ".join(item[4].strip() for item in current_lines)
+            paragraphs.append(para)
+
+    return paragraphs
+
+
 def extract_chunks(
     pdf_path: str | Path,
     doc_id: Optional[str] = None,
@@ -166,7 +225,7 @@ def extract_chunks(
 
             # 2. Extract text blocks outside table bounding boxes
             blocks = page.get_text("blocks")  # (x0, y0, x1, y1, text, block_no, block_type)
-            page_has_text_chunks = False
+            candidate_blocks = []
 
             for b in blocks:
                 block_type = b[6] if len(b) > 6 else 0
@@ -190,15 +249,19 @@ def extract_chunks(
                             break
 
                 if not is_inside_table:
-                    page_has_text_chunks = True
-                    chunks.append(
-                        {
-                            "doc_id": effective_doc_id,
-                            "page_number": page_number,
-                            "text": block_text,
-                            "chunk_type": "text",
-                        }
-                    )
+                    candidate_blocks.append(b)
+
+            merged_paras = _merge_prose_blocks(candidate_blocks, page.rect.width)
+            page_has_text_chunks = len(merged_paras) > 0
+            for para_text in merged_paras:
+                chunks.append(
+                    {
+                        "doc_id": effective_doc_id,
+                        "page_number": page_number,
+                        "text": para_text,
+                        "chunk_type": "text",
+                    }
+                )
 
             # If no blocks were extracted but plain page text exists (fallback for edge cases)
             if not page_has_text_chunks and not tables:
