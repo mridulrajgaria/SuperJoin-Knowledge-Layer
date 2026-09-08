@@ -163,3 +163,35 @@ class Fact(BaseModel):
             confidence=extracted.confidence,
             extra=extracted.extra,
         )
+
+
+class Relationship(BaseModel):
+    """
+    Represents a semantic relationship between two stored facts (PROJECT.md Phase 4).
+    """
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique identifier for the relationship.",
+    )
+    fact_a_id: str = Field(
+        ...,
+        description="Identifier of the primary fact.",
+    )
+    fact_b_id: str = Field(
+        ...,
+        description="Identifier of the comparison fact.",
+    )
+    type: str = Field(
+        ...,
+        description="Type of relationship: 'corroborates', 'contradicts', or 'reconciled_by_context'.",
+    )
+    reasoning: str = Field(
+        ...,
+        description="LLM explanation detailing the corroboration, contradiction, or contextual difference.",
+    )
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for this relationship judgement.",
+    )
