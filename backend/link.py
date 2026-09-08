@@ -309,3 +309,108 @@ def classify_relationship(
             raise err
 
 
+def make_canonical_pair_key(id_a: str, id_b: str) -> Tuple[str, str]:
+    """Ensures order-independent canonical representation of a fact pair (min_id, max_id)."""
+    return (min(id_a, id_b), max(id_a, id_b))
+
+
+def store_relationship(
+    rel: Relationship,
+    conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[Union[str, Path]] = None,
+) -> bool:
+    """
+    Persists a Relationship into SQLite in canonical order (fact_a_id < fact_b_id).
+    Enforces order-independent deduplication via ON CONFLICT.
+    Discards 'unrelated' pairs from database insertion to keep graph clean.
+
+    Returns:
+        True if inserted/updated, False if skipped (e.g. unrelated).
+    """
+    if rel.type == "unrelated":
+        return False
+
+    can_a, can_b = make_canonical_pair_key(rel.fact_a_id, rel.fact_b_id)
+
+    if conn is None:
+        conn = get_connection(db_path)
+
+    upsert_sql = """
+    INSERT INTO relationships (id, fact_a_id, fact_b_id, type, reasoning, confidence)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(fact_a_id, fact_b_id) DO UPDATE SET
+        type=excluded.type,
+        reasoning=excluded.reasoning,
+        confidence=excluded.confidence;
+    """
+
+    with conn:
+        conn.execute(
+            upsert_sql,
+            (rel.id, can_a, can_b, rel.type, rel.reasoning, rel.confidence),
+        )
+
+    return True
+
+
+def get_existing_relationship_pairs(
+    conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[Union[str, Path]] = None,
+) -> Set[Tuple[str, str]]:
+    """Retrieves all canonical (fact_a_id, fact_b_id) pairs already present in the relationships table."""
+    if conn is None:
+        conn = get_connection(db_path)
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT fact_a_id, fact_b_id FROM relationships;")
+    return {make_canonical_pair_key(r[0], r[1]) for r in cursor.fetchall()}
+
+
+def get_all_stored_relationships(
+    conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[Union[str, Path]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieves all stored relationships with joined fact details for human inspection and reporting.
+    """
+    if conn is None:
+        conn = get_connection(db_path)
+
+    query = """
+    SELECT 
+        r.id AS rel_id,
+        r.type,
+        r.reasoning,
+        r.confidence,
+        fa.id AS fact_a_id,
+        fa.entity AS fact_a_entity,
+        fa.attribute AS fact_a_attribute,
+        fa.value AS fact_a_value,
+        fa.unit AS fact_a_unit,
+        fa.as_of AS fact_a_as_of,
+        fa.source_doc_id AS fact_a_doc,
+        fa.page_number AS fact_a_page,
+        fa.evidence_text AS fact_a_evidence,
+        fb.id AS fact_b_id,
+        fb.entity AS fact_b_entity,
+        fb.attribute AS fact_b_attribute,
+        fb.value AS fact_b_value,
+        fb.unit AS fact_b_unit,
+        fb.as_of AS fact_b_as_of,
+        fb.source_doc_id AS fact_b_doc,
+        fb.page_number AS fact_b_page,
+        fb.evidence_text AS fact_b_evidence
+    FROM relationships r
+    JOIN facts fa ON r.fact_a_id = fa.id
+    JOIN facts fb ON r.fact_b_id = fb.id
+    ORDER BY r.created_at DESC;
+    """
+    cursor = conn.cursor()
+    cursor.execute(query)
+    results = []
+    for row in cursor.fetchall():
+        results.append(dict(row))
+    return results
+
+
+
