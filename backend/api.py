@@ -23,13 +23,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from backend.as_of import backfill_facts_as_of, infer_document_as_of
 from backend.db import get_connection, init_db
+from backend.extract import extract_facts_from_chunk, should_process_chunk
+from backend.ingest import extract_chunks
+from backend.link import link_facts
+from backend.schema import Fact, Relationship
+from backend.store import upsert_facts
 
 load_dotenv()
+
+UPLOAD_DIR = Path("data/samples/uploaded")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -122,3 +130,103 @@ def get_stats() -> Dict[str, Any]:
         "total_documents": total_documents,
         "documents": documents,
     }
+
+
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """
+    Accepts a PDF upload, persists to data/samples/uploaded/<filename>, and synchronously executes:
+    1. Ingestion: extract text and table chunks.
+    2. Fact Extraction: extracts structured facts with per-chunk fault tolerance.
+    3. Period Inference: backfills document-level as_of periods if missing.
+    4. Storage: upserts facts and computes vector embeddings.
+    5. Linking: links newly extracted facts against existing knowledge base.
+
+    Returns:
+    {
+        "doc_id": "...",
+        "facts_extracted": ...,
+        "relationships_found": ...,
+        "facts": [...],
+        "relationships": [...],
+        "errors": [...]
+    }
+    """
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file must be a PDF.",
+        )
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    saved_pdf_path = UPLOAD_DIR / file.filename
+    content = await file.read()
+    with open(saved_pdf_path, "wb") as f:
+        f.write(content)
+
+    doc_id = Path(file.filename).stem
+
+    # 1. Ingestion
+    try:
+        chunks = extract_chunks(saved_pdf_path, doc_id=doc_id)
+    except Exception as e:
+        logger.error(f"Failed to ingest PDF {file.filename}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to parse and extract chunks from PDF: {str(e)}",
+        )
+
+    # 2. Fact Extraction (per-chunk error resilience)
+    facts: List[Fact] = []
+    errors: List[Dict[str, Any]] = []
+
+    for chunk in chunks:
+        if not should_process_chunk(chunk):
+            continue
+        try:
+            extracted_facts = extract_facts_from_chunk(chunk)
+            for ef in extracted_facts:
+                facts.append(
+                    Fact.from_extracted(
+                        extracted=ef,
+                        source_doc_id=doc_id,
+                        page_number=chunk["page_number"],
+                    )
+                )
+        except Exception as err:
+            logger.warning(f"Error extracting facts from chunk {chunk.get('chunk_id')}: {err}")
+            errors.append({
+                "chunk_id": chunk.get("chunk_id"),
+                "page_number": chunk.get("page_number"),
+                "error": str(err),
+            })
+
+    # 3. Document-level as_of backfill
+    doc_as_of = infer_document_as_of(doc_id=doc_id, chunks=chunks, pdf_path=saved_pdf_path)
+    facts = backfill_facts_as_of(facts, doc_as_of=doc_as_of)
+
+    # 4. Storage (upsert)
+    conn = get_db()
+    if facts:
+        upsert_facts(facts, conn=conn)
+
+    # 5. Cross-document Fact Linking against all stored documents
+    try:
+        new_relationships = link_facts(doc_id=doc_id, conn=conn, verbose=False)
+    except Exception as err:
+        logger.warning(f"Cross-document linking encountered an error for doc {doc_id}: {err}")
+        errors.append({
+            "stage": "linking",
+            "error": str(err),
+        })
+        new_relationships = []
+
+    return {
+        "doc_id": doc_id,
+        "facts_extracted": len(facts),
+        "relationships_found": len(new_relationships),
+        "facts": [f.model_dump() for f in facts],
+        "relationships": [r.model_dump() for r in new_relationships],
+        "errors": errors,
+    }
+
