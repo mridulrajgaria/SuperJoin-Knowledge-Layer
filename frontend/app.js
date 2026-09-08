@@ -471,12 +471,25 @@ function renderRelationshipsList(relationships) {
       const typeClass = `badge-${rel.type}`;
       const typeText = rel.type.replace(/_/g, ' ').toUpperCase();
 
+      // Display-only annotation for workforce-strength contradiction (2.8Bn vs 63,713)
+      const isWorkforceDiscrepancy =
+        rel.type === 'contradicts' &&
+        ((String(rel.fact_a?.value).includes('2.8') && String(rel.fact_b?.value).includes('63,713')) ||
+         (String(rel.fact_b?.value).includes('2.8') && String(rel.fact_a?.value).includes('63,713')));
+
+      const flaggedBadge = isWorkforceDiscrepancy
+        ? `<span class="badge-flagged"><i data-lucide="alert-triangle" class="badge-flagged-icon"></i> Flagged — requires verification</span>`
+        : '';
+
       return `
         <article class="relationship-card">
           <div class="rel-header">
-            <span class="rel-badge ${typeClass}">
-              ${typeText}
-            </span>
+            <div class="rel-header-left">
+              <span class="rel-badge ${typeClass}">
+                ${typeText}
+              </span>
+              ${flaggedBadge}
+            </div>
             <span class="rel-confidence">Judgement Confidence: ${(rel.confidence * 100).toFixed(0)}%</span>
           </div>
 
@@ -565,6 +578,7 @@ function resetModal() {
   elements.btnModalSubmit.style.display = 'inline-flex';
   elements.btnModalViewFacts.style.display = 'none';
 
+  elements.resultStatusBox.className = 'result-status-box status-success';
   elements.resultStatusBox.style.backgroundColor = 'var(--bg-corroborates)';
   elements.resultStatusBox.style.borderColor = 'var(--border-corroborates)';
   if (elements.resultIconContainer) {
@@ -620,6 +634,7 @@ async function executeUpload() {
     elements.btnModalSubmit.style.display = 'none';
 
     if (result.facts_extracted === 0) {
+      elements.resultStatusBox.className = 'result-status-box status-warning';
       elements.resultStatusBox.style.backgroundColor = 'var(--bg-reconciled)';
       elements.resultStatusBox.style.borderColor = 'var(--border-reconciled)';
       if (elements.resultIconContainer) {
@@ -631,6 +646,7 @@ async function executeUpload() {
         'Document processed but no facts were extracted — the PDF may have no extractable text or no factual content in a format the system recognizes.';
       elements.btnModalViewFacts.style.display = 'none';
     } else {
+      elements.resultStatusBox.className = 'result-status-box status-success';
       elements.resultStatusBox.style.backgroundColor = 'var(--bg-corroborates)';
       elements.resultStatusBox.style.borderColor = 'var(--border-corroborates)';
       if (elements.resultIconContainer) {
@@ -672,6 +688,7 @@ async function executeUpload() {
     console.error('Upload failed:', err);
     elements.modalBodyProcessing.style.display = 'none';
     elements.modalBodyResult.style.display = 'block';
+    elements.resultStatusBox.className = 'result-status-box status-contradicts';
     elements.resultStatusBox.style.backgroundColor = 'var(--bg-contradicts)';
     elements.resultStatusBox.style.borderColor = 'var(--border-contradicts)';
     if (elements.resultIconContainer) {
@@ -680,6 +697,7 @@ async function executeUpload() {
     elements.resultTitle.textContent = 'Upload Pipeline Failed';
     elements.resultTitle.style.color = 'var(--color-contradicts)';
     elements.resultDesc.textContent = err.message;
+    initIcons();
     elements.btnModalCancel.disabled = false;
     elements.btnModalCancel.textContent = 'Dismiss';
     elements.btnModalSubmit.style.display = 'none';
