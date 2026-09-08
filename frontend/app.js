@@ -12,6 +12,7 @@ const API_BASE = window.location.origin.includes(':8000')
 const state = {
   currentView: 'dashboard',
   stats: null,
+  allEntities: [],
   facts: [],
   filteredFacts: [],
   relationships: [],
@@ -287,7 +288,7 @@ window.filterByDoc = function (docId) {
 };
 
 function populateDocumentSelect(documents) {
-  const current = elements.filterDocument.value;
+  const current = state.selectedDocId || elements.filterDocument.value || '';
   elements.filterDocument.innerHTML = '<option value="">All Documents</option>' +
     documents
       .map(
@@ -299,6 +300,20 @@ function populateDocumentSelect(documents) {
 // ==========================================================================
 // Facts View Operations
 // ==========================================================================
+
+async function ensureAllEntities() {
+  if (state.allEntities && state.allEntities.length > 0) return;
+  try {
+    const res = await fetch(`${API_BASE}/facts`);
+    if (res.ok) {
+      const allFacts = await res.json();
+      state.allEntities = Array.from(new Set(allFacts.map((f) => f.entity).filter(Boolean))).sort();
+      populateEntitySelect();
+    }
+  } catch (err) {
+    console.warn('Failed to prefetch master entity list:', err);
+  }
+}
 
 async function loadFacts() {
   try {
@@ -315,8 +330,12 @@ async function loadFacts() {
     const facts = await res.json();
     state.facts = facts;
 
-    // Populate entity select options dynamically
-    populateEntitySelect(facts);
+    // If master allEntities list has not been established yet or if this is an unfiltered fetch, establish it
+    if (state.allEntities.length === 0 || (!state.selectedEntity && !state.selectedDocId)) {
+      state.allEntities = Array.from(new Set(facts.map((f) => f.entity).filter(Boolean))).sort();
+    }
+    // Always render dropdown from the full master list of all distinct entities
+    populateEntitySelect();
     applyFilters();
   } catch (err) {
     console.error('Failed to load facts:', err);
@@ -324,13 +343,11 @@ async function loadFacts() {
   }
 }
 
-function populateEntitySelect(facts) {
-  const currentVal = elements.filterEntity.value;
-  const entities = Array.from(new Set(facts.map((f) => f.entity).filter(Boolean))).sort();
-
+function populateEntitySelect() {
+  const currentVal = state.selectedEntity || '';
   elements.filterEntity.innerHTML =
     '<option value="">All Entities</option>' +
-    entities
+    state.allEntities
       .map(
         (e) => `<option value="${escapeHtml(e)}" ${e === currentVal ? 'selected' : ''}>${escapeHtml(e)}</option>`
       )
