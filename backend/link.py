@@ -137,3 +137,50 @@ def get_candidate_pairs_for_fact(
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return candidates[:top_k]
+
+
+def detect_unit_mismatch_multiplier(fact_a: Fact, fact_b: Fact) -> Optional[str]:
+    """
+    Detects if two numeric facts differ by a round power-of-10 multiplier
+    consistent with unit scale mismatches (e.g. crore vs million, thousand vs million).
+
+    Returns:
+        A formatted hint string for the LLM classifier if a multiplier is detected, or None.
+    """
+    v_a = fact_a.normalized_value
+    v_b = fact_b.normalized_value
+
+    if v_a is None or v_b is None:
+        return None
+
+    try:
+        val_a = float(v_a)
+        val_b = float(v_b)
+    except (ValueError, TypeError):
+        return None
+
+    if val_a <= 0 or val_b <= 0:
+        return None
+
+    ratio = max(val_a, val_b) / min(val_a, val_b)
+
+    # Multipliers with ±2% tolerance
+    MULTIPLIERS = [
+        (10.0, "10x", "Crore vs. Million unit scale (1 crore = 10 million)"),
+        (100.0, "100x", "Percentage vs. Basis Points or Lakh vs. Thousand scale"),
+        (1000.0, "1,000x", "Thousands vs. Millions or Units vs. Thousands scale"),
+        (10000.0, "10,000x", "Crore vs. Thousand scale"),
+        (100000.0, "100,000x", "Lakh vs. Single units scale"),
+        (10000000.0, "10,000,000x (10^7)", "Crore vs. Single units scale"),
+    ]
+
+    for target_mult, label, explanation in MULTIPLIERS:
+        if abs(ratio - target_mult) / target_mult <= 0.025:
+            return (
+                f"UNIT SCALE MISMATCH DETECTED: The normalized values ({val_a} vs {val_b}) differ by a ~{label} "
+                f"multiplier (ratio {ratio:.2f}), which is consistent with a {explanation}. "
+                f"Consider whether this discrepancy is 'reconciled_by_context' via unit scale differences."
+            )
+
+    return None
+
