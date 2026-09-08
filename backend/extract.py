@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 from backend.ingest import Chunk, extract_chunks
 from backend.schema import ChunkFactsExtraction, ExtractedFact, Fact
@@ -157,6 +158,29 @@ def get_llm_client() -> Tuple[str, Any]:
     return "none", None
 
 
+class GeminiExtraField(BaseModel):
+    key: str = Field(description="Property or qualifier name")
+    value: str = Field(description="Property value")
+
+
+class GeminiExtractedFact(BaseModel):
+    entity: str = Field(description="The primary subject or entity the fact is about.")
+    attribute: str = Field(description="The specific property, metric, or statement being made.")
+    value: str = Field(description="The extracted value as reported.")
+    unit: Optional[str] = Field(default=None, description="Unit of measurement if applicable.")
+    normalized_value: Optional[float] = Field(default=None, description="Standardized numeric value.")
+    normalized_unit: Optional[str] = Field(default=None, description="Canonical/standardized unit.")
+    as_of: Optional[str] = Field(default=None, description="Date or time period the fact refers to.")
+    scope: Optional[str] = Field(default=None, description="Scope or qualifying dimension.")
+    evidence_text: str = Field(description="Exact substring or quote from source chunk.")
+    confidence: float = Field(default=1.0, description="Model confidence score between 0.0 and 1.0.")
+    extra: List[GeminiExtraField] = Field(default_factory=list, description="List of key-value pairs for unanticipated qualifiers.")
+
+
+class GeminiChunkFactsExtraction(BaseModel):
+    facts: List[GeminiExtractedFact] = Field(default_factory=list)
+
+
 def extract_facts_from_chunk(
     chunk: Chunk,
     client: Optional[Any] = None,
@@ -184,7 +208,7 @@ def extract_facts_from_chunk(
     if provider == "gemini":
         from google.genai import types
 
-        model_name = model or "gemini-2.5-flash"
+        model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.5-flash"
         response = client.models.generate_content(
             model=model_name,
             contents=[
@@ -192,12 +216,27 @@ def extract_facts_from_chunk(
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=ChunkFactsExtraction,
+                response_schema=GeminiChunkFactsExtraction,
                 temperature=0.0,
             ),
         )
-        parsed = ChunkFactsExtraction.model_validate_json(response.text)
-        return parsed.facts
+        gemini_parsed = GeminiChunkFactsExtraction.model_validate_json(response.text)
+        return [
+            ExtractedFact(
+                entity=f.entity,
+                attribute=f.attribute,
+                value=f.value,
+                unit=f.unit,
+                normalized_value=f.normalized_value,
+                normalized_unit=f.normalized_unit,
+                as_of=f.as_of,
+                scope=f.scope,
+                evidence_text=f.evidence_text,
+                confidence=f.confidence,
+                extra={item.key: item.value for item in f.extra},
+            )
+            for f in gemini_parsed.facts
+        ]
 
     elif provider == "openai":
         model_name = model or "gpt-4o-mini"
@@ -224,17 +263,24 @@ def extract_document_facts(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     max_chunks: Optional[int] = None,
+    start_page: Optional[int] = None,
+    end_page: Optional[int] = None,
 ) -> List[Fact]:
     """
     Runs end-to-end ingestion and structured fact extraction on a PDF.
 
     1. Ingests PDF into chunks.
-    2. Applies cheap heuristic filtering.
+    2. Applies page range and cheap heuristic filtering.
     3. Calls LLM with structured output.
     4. Validates evidence grounding against source chunks.
     5. Returns grounded Fact models.
     """
     raw_chunks = extract_chunks(pdf_path, doc_id=doc_id)
+    if start_page is not None:
+        raw_chunks = [c for c in raw_chunks if c["page_number"] >= start_page]
+    if end_page is not None:
+        raw_chunks = [c for c in raw_chunks if c["page_number"] <= end_page]
+
     filtered_chunks = [c for c in raw_chunks if should_process_chunk(c)]
 
     if max_chunks is not None and max_chunks > 0:
@@ -308,6 +354,18 @@ def main() -> None:
         help="Optional limit on number of chunks to process (useful for testing).",
     )
     parser.add_argument(
+        "--start-page",
+        type=int,
+        default=None,
+        help="Optional 1-indexed starting page number to extract from.",
+    )
+    parser.add_argument(
+        "--end-page",
+        type=int,
+        default=None,
+        help="Optional 1-indexed ending page number to extract from.",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         type=str,
@@ -342,6 +400,8 @@ def main() -> None:
             doc_id=effective_doc_id,
             model=args.model,
             max_chunks=args.max_chunks,
+            start_page=args.start_page,
+            end_page=args.end_page,
         )
 
         facts_dicts = [f.model_dump() for f in facts]
