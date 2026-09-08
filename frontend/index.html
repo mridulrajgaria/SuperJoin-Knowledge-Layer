@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Superjoin — Evidence Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <!-- Top Navigation Bar -->
+  <header class="top-bar">
+    <div class="top-bar-left">
+      <span class="brand-title">Superjoin — Evidence Intelligence</span>
+      <span class="brand-subtitle">Fact Verification & Document Layer</span>
+    </div>
+    <div class="top-bar-center">
+      <div class="search-box">
+        <i data-lucide="search" class="search-icon"></i>
+        <input type="text" id="global-search" placeholder="Search facts, entities, attributes, or evidence..." />
+      </div>
+    </div>
+    <div class="top-bar-right">
+      <button class="btn btn-primary" id="btn-open-upload">
+        <i data-lucide="upload" class="btn-icon"></i>
+        Upload PDF
+      </button>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <!-- Left Navigation Sidebar -->
+    <aside class="sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="dashboard">
+          <i data-lucide="layout-dashboard" class="nav-icon"></i>
+          <span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-view="facts">
+          <i data-lucide="file-text" class="nav-icon"></i>
+          <span>Facts</span>
+          <span class="nav-badge" id="nav-facts-count">-</span>
+        </button>
+        <button class="nav-item" data-view="relationships">
+          <i data-lucide="git-compare" class="nav-icon"></i>
+          <span>Relationships</span>
+          <span class="nav-badge" id="nav-rels-count">-</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span class="status-label" id="backend-status-text">Connecting to API...</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Workspace Content -->
+    <main class="main-content">
+      <!-- 1. DASHBOARD VIEW -->
+      <section id="view-dashboard" class="view-panel active">
+        <div class="view-header">
+          <div>
+            <h1 class="page-title">Workspace Overview</h1>
+            <p class="page-subtitle">Summary of grounded facts, documents, and cross-document verification status.</p>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btn-refresh-stats">
+            <i data-lucide="refresh-cw" class="btn-icon"></i> Refresh
+          </button>
+        </div>
+
+        <!-- Metric Stat Cards -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total Grounded Facts</div>
+            <div class="stat-value" id="stat-total-facts">-</div>
+            <div class="stat-subtext">Verified from page-anchored evidence</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Source Documents</div>
+            <div class="stat-value" id="stat-total-docs">-</div>
+            <div class="stat-subtext">Corporate & macroeconomic excerpts</div>
+          </div>
+          <div class="stat-card stat-card-corroborates">
+            <div class="stat-label">Corroborated</div>
+            <div class="stat-value text-corroborates" id="stat-corroborates">-</div>
+            <div class="stat-subtext">Identical metrics across distinct sources</div>
+          </div>
+          <div class="stat-card stat-card-reconciled">
+            <div class="stat-label">Reconciled by Context</div>
+            <div class="stat-value text-reconciled" id="stat-reconciled">-</div>
+            <div class="stat-subtext">Explained by temporal or scope shifts</div>
+          </div>
+          <div class="stat-card stat-card-contradicts">
+            <div class="stat-label">Contradictions</div>
+            <div class="stat-value text-contradicts" id="stat-contradicts">-</div>
+            <div class="stat-subtext">Conflicting metrics flagged for analyst review</div>
+          </div>
+        </div>
+
+        <!-- Dashboard Document Inventory & Upload Area -->
+        <div class="dashboard-grid">
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Document Inventory</h2>
+              <span class="card-meta" id="doc-inventory-meta">0 documents loaded</span>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="table-documents">
+                <thead>
+                  <tr>
+                    <th>Document Identifier</th>
+                    <th>Extracted Facts</th>
+                    <th class="text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody-documents">
+                  <tr><td colspan="3" class="table-empty">Loading documents...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Ingest Document</h2>
+              <span class="card-meta">Upload PDF for verification</span>
+            </div>
+            <div class="upload-dropzone" id="dashboard-dropzone">
+              <i data-lucide="file-up" class="dropzone-icon"></i>
+              <div class="dropzone-title">Click to select PDF or drag and drop</div>
+              <div class="dropzone-subtext">Executes Ingest → Extract → Store → Cross-Document Link synchronously</div>
+              <input type="file" id="file-input-dashboard" accept=".pdf" class="file-input-hidden" />
+            </div>
+            <div class="dropzone-feedback" id="dashboard-upload-feedback" style="display: none;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. FACTS VIEW -->
+      <section id="view-facts" class="view-panel">
+        <div class="view-header">
+          <div>
+            <h1 class="page-title">Extracted Facts</h1>
+            <p class="page-subtitle">Granular facts extracted and grounded with verbatim source citations.</p>
+          </div>
+          <div class="view-meta-pill" id="facts-filter-count">Showing all facts</div>
+        </div>
+
+        <!-- Filters Toolbar -->
+        <div class="filter-toolbar">
+          <div class="filter-group">
+            <label for="filter-entity" class="filter-label">Entity:</label>
+            <select id="filter-entity" class="select-control">
+              <option value="">All Entities</option>
+            </select>
+          </div>
+
+          <div class="filter-group">
+            <label for="filter-document" class="filter-label">Document:</label>
+            <select id="filter-document" class="select-control">
+              <option value="">All Documents</option>
+            </select>
+          </div>
+
+          <div class="filter-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-reset-facts-filter">
+              <i data-lucide="rotate-ccw" class="btn-icon"></i> Reset Filters
+            </button>
+          </div>
+        </div>
+
+        <!-- Facts List Container -->
+        <div class="facts-list" id="facts-container">
+          <div class="empty-state">Loading facts from storage...</div>
+        </div>
+      </section>
+
+      <!-- 3. RELATIONSHIPS VIEW -->
+      <section id="view-relationships" class="view-panel">
+        <div class="view-header">
+          <div>
+            <h1 class="page-title">Cross-Document Relationships</h1>
+            <p class="page-subtitle">Algorithmic and LLM-verified relationships between facts across distinct source documents.</p>
+          </div>
+          <div class="view-meta-pill" id="relationships-filter-count">Showing all relationships</div>
+        </div>
+
+        <!-- Relationship Category Tabs -->
+        <div class="relationship-tabs">
+          <button class="rel-tab active" data-type="">All Relationships</button>
+          <button class="rel-tab rel-tab-corroborates" data-type="corroborates">
+            <span class="tab-dot dot-corroborates"></span> Corroborates (<span id="tab-count-corroborates">0</span>)
+          </button>
+          <button class="rel-tab rel-tab-reconciled" data-type="reconciled_by_context">
+            <span class="tab-dot dot-reconciled"></span> Reconciled by Context (<span id="tab-count-reconciled">0</span>)
+          </button>
+          <button class="rel-tab rel-tab-contradicts" data-type="contradicts">
+            <span class="tab-dot dot-contradicts"></span> Contradicts (<span id="tab-count-contradicts">0</span>)
+          </button>
+        </div>
+
+        <!-- Relationships List Container -->
+        <div class="relationships-list" id="relationships-container">
+          <div class="empty-state">Loading relationships from storage...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- UPLOAD MODAL -->
+  <div class="modal-overlay" id="upload-modal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Upload & Verify Document</h3>
+        <button class="modal-close" id="btn-close-modal">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <div class="modal-body" id="modal-body-idle">
+        <p class="modal-text">Select a financial report, earnings presentation, or macroeconomic excerpt to run end-to-end fact extraction and cross-document verification.</p>
+        <div class="upload-dropzone" id="modal-dropzone">
+          <i data-lucide="file-up" class="dropzone-icon"></i>
+          <div class="dropzone-title" id="modal-file-name">Click or drag PDF here</div>
+          <div class="dropzone-subtext">Must be a valid PDF file</div>
+          <input type="file" id="file-input-modal" accept=".pdf" class="file-input-hidden" />
+        </div>
+      </div>
+
+      <div class="modal-body" id="modal-body-processing" style="display: none;">
+        <div class="loading-spinner"></div>
+        <h4 class="processing-title">Processing Document Pipeline</h4>
+        <p class="processing-desc">Executing: Ingestion → LLM Fact Extraction → Document Period Inference → Embedding Upsert → Cross-Document Linking.</p>
+        <p class="processing-subtext">Processing may take 1 to 2 minutes depending on chunk volume and API response times. Please wait.</p>
+      </div>
+
+      <div class="modal-body" id="modal-body-result" style="display: none;">
+        <div class="result-success-box" id="result-status-box">
+          <i data-lucide="check-circle-2" class="result-icon"></i>
+          <div>
+            <h4 class="result-title" id="result-title">Pipeline Succeeded</h4>
+            <p class="result-desc" id="result-desc">Facts extracted and linked successfully.</p>
+          </div>
+        </div>
+        <div class="result-metrics" id="result-metrics"></div>
+        <div class="result-errors" id="result-errors" style="display: none;"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-modal-cancel">Cancel</button>
+        <button class="btn btn-primary" id="btn-modal-submit" disabled>Start Extraction</button>
+        <button class="btn btn-primary" id="btn-modal-view-facts" style="display: none;">View Document Facts</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

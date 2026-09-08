@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.as_of import backfill_facts_as_of, infer_document_as_of
 from backend.db import get_connection, init_db
@@ -434,5 +435,12 @@ def get_relationships(
         })
 
     return relationships
+
+
+# Mount static frontend for web workspace
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+
 
 
