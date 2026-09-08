@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -20,7 +21,8 @@ from dotenv import load_dotenv
 
 from backend.db import get_connection, init_db
 from backend.embeddings import bytes_to_embedding, compute_cosine_similarity
-from backend.schema import Fact
+from backend.extract import get_llm_client
+from backend.schema import Fact, FactRelationshipJudgement, Relationship
 
 load_dotenv()
 
@@ -183,4 +185,127 @@ def detect_unit_mismatch_multiplier(fact_a: Fact, fact_b: Fact) -> Optional[str]
             )
 
     return None
+
+
+RELATIONSHIP_SYSTEM_PROMPT = """You are an expert factual reasoning and knowledge graph system.
+Your task is to analyze two facts extracted from different source documents and classify their semantic relationship.
+
+Relationship Categories:
+1. 'corroborates': Both facts state the same or consistent claim/metric about the entity for the same time period and scope (e.g. both confirm 18,793 pin codes covered in FY24, or both report 6.5% repo rate in 2024-25). Minor variations in phrasing or precision are allowed.
+2. 'contradicts': Both facts report genuinely conflicting figures, statuses, or assertions for the SAME entity, attribute, and time period/scope that CANNOT be reconciled by time, scope, or measurement units.
+3. 'reconciled_by_context': The facts report different numbers or assertions, but the difference is logically explained by contextual divergence:
+   - Temporal difference: Different 'as_of' periods or dates (e.g., 17,488 pin codes in Dec 2021 vs 18,793 in March 2024; network expanded over time).
+   - Scope difference: Consolidated vs standalone, urban vs rural, provisional vs revised.
+   - Unit/Scale difference: Values reported in different denominations (crore vs million, thousands vs units).
+4. 'unrelated': The two facts are superficially similar in vocabulary or domain, but describe DIFFERENT attributes, metrics, or events (e.g. gateway count vs sort center count, or revenue vs inflation). Do NOT force unrelated facts into corroborates/contradicts/reconciled!
+
+CRITICAL REASONING RULE:
+The 'reasoning' field MUST explicitly cite the specific values, effective periods ('as_of'), scopes, and units of both facts. Avoid generic, hand-waving statements like "these facts are different" or "these facts agree". State the exact numbers and explain why they corroborate, contradict, or reconcile.
+"""
+
+
+def classify_relationship(
+    fact_a: Fact,
+    fact_b: Fact,
+    client: Optional[Any] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    max_retries: int = 5,
+    initial_backoff: float = 4.0,
+) -> FactRelationshipJudgement:
+    """
+    Calls LLM with structured output to judge the relationship between two cross-document facts.
+    Includes unit-mismatch hints and rate-limit backoff retry.
+    """
+    if client is None or provider is None:
+        provider, client = get_llm_client()
+
+    if provider == "none" or client is None:
+        raise RuntimeError(
+            "No LLM API key configured. Please set GEMINI_API_KEY or OPENAI_API_KEY in your environment or .env file."
+        )
+
+    # Pre-check for unit scale mismatches
+    unit_hint = detect_unit_mismatch_multiplier(fact_a, fact_b)
+    hint_section = f"\nPre-computed Analysis:\n{unit_hint}\n" if unit_hint else ""
+
+    pair_prompt = (
+        f"FACT A:\n"
+        f"- Entity: {fact_a.entity}\n"
+        f"- Attribute: {fact_a.attribute}\n"
+        f"- Value: {fact_a.value}\n"
+        f"- Unit: {fact_a.unit or 'none'}\n"
+        f"- Normalized Value: {fact_a.normalized_value}\n"
+        f"- Normalized Unit: {fact_a.normalized_unit}\n"
+        f"- As Of: {fact_a.as_of or 'unspecified'}\n"
+        f"- Scope: {fact_a.scope or 'none'}\n"
+        f"- Source Document: {fact_a.source_doc_id} (page {fact_a.page_number})\n"
+        f"- Evidence Quote: \"{fact_a.evidence_text}\"\n\n"
+        f"FACT B:\n"
+        f"- Entity: {fact_b.entity}\n"
+        f"- Attribute: {fact_b.attribute}\n"
+        f"- Value: {fact_b.value}\n"
+        f"- Unit: {fact_b.unit or 'none'}\n"
+        f"- Normalized Value: {fact_b.normalized_value}\n"
+        f"- Normalized Unit: {fact_b.normalized_unit}\n"
+        f"- As Of: {fact_b.as_of or 'unspecified'}\n"
+        f"- Scope: {fact_b.scope or 'none'}\n"
+        f"- Source Document: {fact_b.source_doc_id} (page {fact_b.page_number})\n"
+        f"- Evidence Quote: \"{fact_b.evidence_text}\"\n"
+        f"{hint_section}\n"
+        "Classify the relationship between FACT A and FACT B. Cite exact values, periods, and units in your reasoning."
+    )
+
+    for attempt in range(max_retries):
+        try:
+            if provider == "gemini":
+                from google.genai import types
+
+                model_name = model or os.getenv("GEMINI_MODEL") or "gemini-3.6-flash"
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        {"role": "user", "parts": [{"text": RELATIONSHIP_SYSTEM_PROMPT + "\n\n" + pair_prompt}]}
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=FactRelationshipJudgement,
+                        temperature=0.0,
+                    ),
+                )
+                return FactRelationshipJudgement.model_validate_json(response.text)
+
+            elif provider == "openai":
+                model_name = model or "gpt-4o-mini"
+                completion = client.beta.chat.completions.parse(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": RELATIONSHIP_SYSTEM_PROMPT},
+                        {"role": "user", "content": pair_prompt},
+                    ],
+                    response_format=FactRelationshipJudgement,
+                    temperature=0.0,
+                )
+                parsed = completion.choices[0].message.parsed
+                if parsed is None:
+                    raise RuntimeError("Failed to parse OpenAI relationship response")
+                return parsed
+
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+        except Exception as err:
+            err_lower = str(err).lower()
+            is_rate_limit = any(k in err_lower for k in ["429", "resource_exhausted", "quota", "too many requests"])
+            if is_rate_limit and attempt < max_retries - 1:
+                sleep_secs = min(60.0, initial_backoff * (2 ** attempt))
+                print(
+                    f"Warning: Rate limit hit (429) during relationship classification. "
+                    f"Backing off for {sleep_secs:.1f}s (retry {attempt + 1}/{max_retries})...",
+                    file=sys.stderr,
+                )
+                time.sleep(sleep_secs)
+                continue
+            raise err
+
 
