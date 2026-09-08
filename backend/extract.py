@@ -38,9 +38,12 @@ Rules:
 1. Grounding & Evidence:
    - Every fact must be directly stated in the input text.
    - The 'evidence_text' field MUST be an exact substring quoted directly from the input chunk that contains the fact. Do NOT invent, extrapolate, or paraphrase evidence.
-2. Fact Representation:
-   - 'entity': The primary subject or entity the fact relates to (e.g., an organization, product, country, person, index, or concept).
-   - 'attribute': The property, metric, event, or relation being asserted (e.g., 'consolidated revenue', 'headcount', 'growth rate', 'inflation rate', 'registered office').
+2. Entity vs Attribute Rules (CRITICAL):
+   - 'entity': MUST ALWAYS BE the real-world named subject — an actual company, organization, country, state, government agency, person, or specific named institution/index.
+     * In corporate filings, earnings decks, or annual reports, operational metrics, facility counts, equipment, and financial results belong to the reporting enterprise (e.g. 'Delhivery', or a named subsidiary/shareholder like 'CA Swift Investments').
+     * In macroeconomic documents, the entity is the country, region, central bank, or agency (e.g. 'India', 'Reserve Bank of India', 'IMF', 'Global Economy').
+     * NEVER use metric types, equipment names, asset classes, or operational items as the entity! For example, '46-ft tractors', 'Fleet', 'Active customers', 'Pin codes', 'Staff', 'Revenue', 'Gateways' are NEVER entities — they are metrics or categories that belong in the 'attribute' field under the entity (e.g. entity: 'Delhivery', attribute: 'count of 46-ft tractors').
+   - 'attribute': The specific property, metric, equipment count, operational figure, event, or relation being reported about that entity (e.g., 'count of 46-ft tractors', 'daily average fleet size', 'pin codes covered', 'active customer count', 'consolidated revenue', 'retail inflation rate').
    - 'value': The value or statement reported. Keep the original formatting and numeric precision as stated.
    - 'unit': The unit of measurement if applicable (e.g., '%', 'INR crore', 'USD', 'million', or null if non-numeric).
    - 'normalized_value': Standardized numeric representation of the value (as a float, e.g., 8141.74 for '8,141.74 Cr', 6.5 for '6.50%', 0.082 for '8.2%'), or null if qualitative/non-numeric.
@@ -48,7 +51,7 @@ Rules:
    - 'as_of': The temporal period or effective date the fact refers to (e.g., 'FY24', 'Q4 FY24', 'March 31, 2024', or null if not time-bound).
    - 'scope': The qualifying scope or segment if specified (e.g., 'consolidated', 'standalone', 'urban', 'rural', or null).
    - 'confidence': Your confidence score between 0.0 and 1.0 that the fact is accurately stated and extracted.
-   - 'extra': A flexible key-value dictionary for any domain-specific qualifiers, accounting notes, or footnotes that do not fit into the standard fields.
+   - 'extra': A flexible key-value list for domain-specific qualifiers, footnotes, or accounting notes that do not fit into the standard fields.
 3. No Hallucinations:
    - If the chunk contains no verifiable facts (e.g., greetings, boilerplate legal disclaimers, pure navigation headers), return an empty list: {"facts": []}.
    - Do not perform calculations or conversions unless explicitly stated in the chunk.
@@ -202,7 +205,8 @@ def extract_facts_from_chunk(
         f"Document ID: {chunk['doc_id']}\n"
         f"Page: {chunk['page_number']}\n"
         f"Chunk Type: {chunk['chunk_type']}\n\n"
-        f"Content:\n{chunk['text']}"
+        f"Content:\n{chunk['text']}\n\n"
+        "Remember: 'entity' MUST ALWAYS be the real-world named subject (e.g. company, country, organization) and NEVER a metric type, equipment, or category (e.g., '46-ft tractors', 'Fleet', 'Active customers', 'Pin codes' belong in 'attribute' under entity 'Delhivery')."
     )
 
     if provider == "gemini":
