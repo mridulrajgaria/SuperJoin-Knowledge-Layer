@@ -5,11 +5,13 @@ Retrieves candidate fact pairs across documents using vector similarity,
 applies domain and similarity pre-filters, and prepares candidates for LLM classification.
 """
 
+import argparse
+import json
 import os
 import sqlite3
 import sys
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -411,6 +413,233 @@ def get_all_stored_relationships(
     for row in cursor.fetchall():
         results.append(dict(row))
     return results
+
+
+def link_facts(
+    doc_id: Optional[str] = None,
+    top_k: int = 5,
+    min_sim: float = 0.70,
+    model: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[Union[str, Path]] = None,
+    dry_run: bool = False,
+    verbose: bool = True,
+) -> List[Relationship]:
+    """
+    Executes cross-document fact linking for a specific document or all documents in storage.
+
+    Workflow:
+    1. Loads all facts with embeddings from SQLite.
+    2. Identifies target facts (filtered by doc_id if provided).
+    3. Finds candidate pairs across distinct documents satisfying similarity floor and domain pre-filters.
+    4. Deduplicates pairs canonically so (A, B) and (B, A) are evaluated once.
+    5. Calls LLM with structured reasoning to classify relationships.
+    6. Persists non-unrelated relationships into SQLite relationships table.
+    """
+    if conn is None:
+        conn = get_connection(db_path)
+
+    init_db(conn=conn)
+
+    # 1. Fetch all facts with embeddings
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, entity, attribute, value, unit, normalized_value, normalized_unit, "
+        "as_of, scope, source_doc_id, page_number, evidence_text, confidence, extra, embedding "
+        "FROM facts WHERE embedding IS NOT NULL;"
+    )
+    all_rows = cursor.fetchall()
+
+    if not all_rows:
+        if verbose:
+            print("No facts with embeddings found in database.", file=sys.stderr)
+        return []
+
+    all_facts_with_embeddings: List[Tuple[Fact, np.ndarray]] = []
+    for r in all_rows:
+        fact = row_to_fact(r)
+        emb = bytes_to_embedding(r["embedding"])
+        if emb is not None:
+            all_facts_with_embeddings.append((fact, emb))
+
+    # 2. Identify target facts
+    if doc_id:
+        target_pool = [(f, e) for f, e in all_facts_with_embeddings if f.source_doc_id == doc_id]
+        if not target_pool and verbose:
+            print(f"No facts found for doc-id '{doc_id}' in storage.", file=sys.stderr)
+            return []
+    else:
+        target_pool = all_facts_with_embeddings
+
+    if verbose:
+        print(
+            f"Cross-Document Linking: {len(target_pool)} target facts, "
+            f"{len(all_facts_with_embeddings)} total facts in pool (top_k={top_k}, min_sim={min_sim:.2f})...",
+            file=sys.stderr,
+        )
+
+    # 3. Retrieve and queue candidate pairs
+    existing_pairs = get_existing_relationship_pairs(conn=conn)
+    queued_pairs: List[Tuple[Tuple[str, str], Fact, Fact, float]] = []
+    seen_in_batch: Set[Tuple[str, str]] = set()
+
+    for target_fact, target_emb in target_pool:
+        candidates = get_candidate_pairs_for_fact(
+            target_fact=target_fact,
+            target_embedding=target_emb,
+            all_facts_with_embeddings=all_facts_with_embeddings,
+            top_k=top_k,
+            min_sim=min_sim,
+        )
+
+        for sim, cand_fact in candidates:
+            pair_key = make_canonical_pair_key(target_fact.id, cand_fact.id)
+            if pair_key in existing_pairs or pair_key in seen_in_batch:
+                continue
+            seen_in_batch.add(pair_key)
+            queued_pairs.append((pair_key, target_fact, cand_fact, sim))
+
+    if verbose:
+        print(
+            f"Found {len(queued_pairs)} unique candidate cross-document pairs to evaluate with LLM.",
+            file=sys.stderr,
+        )
+
+    relationships_created: List[Relationship] = []
+
+    # 4. Classify each candidate pair
+    for idx, (pair_key, fact_a, fact_b, sim) in enumerate(queued_pairs):
+        if verbose:
+            print(
+                f"[{idx + 1}/{len(queued_pairs)}] Evaluating: "
+                f"[{fact_a.source_doc_id}] {fact_a.entity}: {fact_a.attribute} "
+                f"vs [{fact_b.source_doc_id}] {fact_b.entity}: {fact_b.attribute} (sim={sim:.3f})...",
+                file=sys.stderr,
+            )
+
+        judgement = classify_relationship(
+            fact_a=fact_a,
+            fact_b=fact_b,
+            model=model,
+        )
+
+        if verbose:
+            print(f"  -> Result: {judgement.type.upper()} (conf: {judgement.confidence:.2f})", file=sys.stderr)
+            print(f"     Reasoning: {judgement.reasoning}\n", file=sys.stderr)
+
+        if judgement.type == "unrelated":
+            continue
+
+        rel = Relationship(
+            fact_a_id=pair_key[0],
+            fact_b_id=pair_key[1],
+            type=judgement.type,
+            reasoning=judgement.reasoning,
+            confidence=judgement.confidence,
+        )
+
+        if not dry_run:
+            store_relationship(rel, conn=conn)
+
+        relationships_created.append(rel)
+
+    if verbose:
+        print(
+            f"\nLinking complete: {len(relationships_created)} valid relationships discovered and recorded.",
+            file=sys.stderr,
+        )
+
+    return relationships_created
+
+
+def main() -> None:
+    if sys.stdout.encoding != "utf-8" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    parser = argparse.ArgumentParser(
+        description="Cross-Document Fact Linking CLI (Phase 4)"
+    )
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument(
+        "--doc-id",
+        type=str,
+        help="Link facts from this specific document against all other documents in storage.",
+    )
+    group.add_argument(
+        "--all",
+        action="store_true",
+        help="Run cross-document linking across all documents currently in storage.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Maximum nearest neighbors to retrieve per fact (default: 5).",
+    )
+    parser.add_argument(
+        "--min-sim",
+        type=float,
+        default=0.70,
+        help="Minimum cosine similarity threshold floor (default: 0.70).",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="LLM model override for relationship classification (default: gemini-3.6-flash).",
+    )
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="Custom SQLite database path (defaults to facts.db).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Evaluate relationships without storing them to SQLite.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output created relationships as JSON to stdout.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List all relationships currently stored in the database.",
+    )
+
+    args = parser.parse_args()
+
+    if args.list:
+        rels = get_all_stored_relationships(db_path=args.db)
+        print(f"Total stored relationships: {len(rels)}\n")
+        print(json.dumps(rels, indent=2, ensure_ascii=False))
+        return
+
+    if not args.doc_id and not args.all:
+        parser.print_help()
+        sys.exit(0)
+
+    results = link_facts(
+        doc_id=args.doc_id,
+        top_k=args.top_k,
+        min_sim=args.min_sim,
+        model=args.model,
+        db_path=args.db,
+        dry_run=args.dry_run,
+        verbose=True,
+    )
+
+    if args.json:
+        rels_dicts = [r.model_dump() for r in results]
+        print(json.dumps(rels_dicts, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
+
 
 
 
