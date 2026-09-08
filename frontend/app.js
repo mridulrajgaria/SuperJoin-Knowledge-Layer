@@ -77,6 +77,7 @@ const elements = {
   resultMetrics: document.getElementById('result-metrics'),
   resultErrors: document.getElementById('result-errors'),
   resultStatusBox: document.getElementById('result-status-box'),
+  resultIconContainer: document.getElementById('result-icon-container'),
 };
 
 // ==========================================================================
@@ -566,10 +567,8 @@ function resetModal() {
 
   elements.resultStatusBox.style.backgroundColor = 'var(--bg-corroborates)';
   elements.resultStatusBox.style.borderColor = 'var(--border-corroborates)';
-  const icon = elements.resultStatusBox.querySelector('i');
-  if (icon) {
-    icon.setAttribute('data-lucide', 'check-circle');
-    icon.style.color = 'var(--color-corroborates)';
+  if (elements.resultIconContainer) {
+    elements.resultIconContainer.innerHTML = '<i data-lucide="check-circle-2" class="result-icon" style="color: var(--color-corroborates);"></i>';
   }
   elements.resultTitle.style.color = 'var(--color-corroborates)';
   initIcons();
@@ -623,10 +622,8 @@ async function executeUpload() {
     if (result.facts_extracted === 0) {
       elements.resultStatusBox.style.backgroundColor = 'var(--bg-reconciled)';
       elements.resultStatusBox.style.borderColor = 'var(--border-reconciled)';
-      const icon = elements.resultStatusBox.querySelector('i');
-      if (icon) {
-        icon.setAttribute('data-lucide', 'alert-triangle');
-        icon.style.color = 'var(--color-reconciled)';
+      if (elements.resultIconContainer) {
+        elements.resultIconContainer.innerHTML = '<i data-lucide="alert-triangle" class="result-icon" style="color: var(--color-reconciled);"></i>';
       }
       elements.resultTitle.textContent = 'No Facts Extracted';
       elements.resultTitle.style.color = 'var(--color-reconciled)';
@@ -636,10 +633,8 @@ async function executeUpload() {
     } else {
       elements.resultStatusBox.style.backgroundColor = 'var(--bg-corroborates)';
       elements.resultStatusBox.style.borderColor = 'var(--border-corroborates)';
-      const icon = elements.resultStatusBox.querySelector('i');
-      if (icon) {
-        icon.setAttribute('data-lucide', 'check-circle');
-        icon.style.color = 'var(--color-corroborates)';
+      if (elements.resultIconContainer) {
+        elements.resultIconContainer.innerHTML = '<i data-lucide="check-circle-2" class="result-icon" style="color: var(--color-corroborates);"></i>';
       }
       elements.resultTitle.textContent = 'Pipeline Completed Successfully';
       elements.resultTitle.style.color = 'var(--color-corroborates)';
@@ -679,8 +674,9 @@ async function executeUpload() {
     elements.modalBodyResult.style.display = 'block';
     elements.resultStatusBox.style.backgroundColor = 'var(--bg-contradicts)';
     elements.resultStatusBox.style.borderColor = 'var(--border-contradicts)';
-    elements.resultStatusBox.querySelector('i').setAttribute('data-lucide', 'alert-circle');
-    elements.resultStatusBox.querySelector('i').style.color = 'var(--color-contradicts)';
+    if (elements.resultIconContainer) {
+      elements.resultIconContainer.innerHTML = '<i data-lucide="alert-circle" class="result-icon" style="color: var(--color-contradicts);"></i>';
+    }
     elements.resultTitle.textContent = 'Upload Pipeline Failed';
     elements.resultTitle.style.color = 'var(--color-contradicts)';
     elements.resultDesc.textContent = err.message;
