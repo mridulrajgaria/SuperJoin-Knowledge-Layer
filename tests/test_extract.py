@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for Fact Extraction (Phase 2).
 
 Tests:
@@ -34,6 +34,8 @@ def test_fact_schema_and_extra_flexibility():
         attribute="policy repo rate",
         value="6.50",
         unit="%",
+        normalized_value=6.50,
+        normalized_unit="%",
         as_of="2024-25",
         scope="national",
         evidence_text="The policy repo rate was kept unchanged at 6.50 per cent.",
@@ -42,10 +44,14 @@ def test_fact_schema_and_extra_flexibility():
     )
     assert ef.entity == "Reserve Bank of India"
     assert ef.unit == "%"
+    assert ef.normalized_value == 6.50
+    assert ef.normalized_unit == "%"
     assert ef.extra["vote_split"] == "4-2"
 
     # 2. Convert to stored Fact
     fact = Fact.from_extracted(ef, source_doc_id="rbi-ar-24", page_number=5)
+    assert fact.normalized_value == 6.50
+    assert fact.normalized_unit == "%"
     assert fact.source_doc_id == "rbi-ar-24"
     assert fact.page_number == 5
     assert fact.id is not None and len(fact.id) > 0

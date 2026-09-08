@@ -42,6 +42,8 @@ Rules:
    - 'attribute': The property, metric, event, or relation being asserted (e.g., 'consolidated revenue', 'headcount', 'growth rate', 'inflation rate', 'registered office').
    - 'value': The value or statement reported. Keep the original formatting and numeric precision as stated.
    - 'unit': The unit of measurement if applicable (e.g., '%', 'INR crore', 'USD', 'million', or null if non-numeric).
+   - 'normalized_value': Standardized numeric representation of the value (as a float, e.g., 8141.74 for '8,141.74 Cr', 6.5 for '6.50%', 0.082 for '8.2%'), or null if qualitative/non-numeric.
+   - 'normalized_unit': Canonical/standardized unit symbol or denomination (e.g., 'INR', 'USD', '%', 'count', 'ratio', 'sq_ft'), or null if not applicable.
    - 'as_of': The temporal period or effective date the fact refers to (e.g., 'FY24', 'Q4 FY24', 'March 31, 2024', or null if not time-bound).
    - 'scope': The qualifying scope or segment if specified (e.g., 'consolidated', 'standalone', 'urban', 'rural', or null).
    - 'confidence': Your confidence score between 0.0 and 1.0 that the fact is accurately stated and extracted.

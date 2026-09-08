@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fact Schema Module
 
 Defines the Pydantic data models for Fact extraction as specified in PROJECT.md:
@@ -31,6 +31,14 @@ class ExtractedFact(BaseModel):
     unit: Optional[str] = Field(
         default=None,
         description="Unit of measurement if applicable (e.g., 'INR crore', '%', 'million', or null if non-numeric).",
+    )
+    normalized_value: Optional[float] = Field(
+        default=None,
+        description="Standardized numeric value (e.g., 8141.74, 6.5) for mathematical/cross-document comparison, or null if qualitative.",
+    )
+    normalized_unit: Optional[str] = Field(
+        default=None,
+        description="Canonical/standardized unit (e.g., 'INR', 'USD', '%', 'ratio', 'count', 'sq_ft'), or null if not applicable.",
     )
     as_of: Optional[str] = Field(
         default=None,
@@ -90,6 +98,14 @@ class Fact(BaseModel):
         default=None,
         description="Unit of measurement (e.g., 'INR crore', '%', or null).",
     )
+    normalized_value: Optional[float] = Field(
+        default=None,
+        description="Standardized numeric value (e.g., 8141.74, 6.5) for mathematical/cross-document comparison, or null if qualitative.",
+    )
+    normalized_unit: Optional[str] = Field(
+        default=None,
+        description="Canonical/standardized unit (e.g., 'INR', 'USD', '%', 'ratio', 'count', 'sq_ft'), or null if not applicable.",
+    )
     as_of: Optional[str] = Field(
         default=None,
         description="Date or period the fact refers to (e.g., 'FY24', 'Q4 FY24').",
@@ -137,6 +153,8 @@ class Fact(BaseModel):
             attribute=extracted.attribute,
             value=extracted.value,
             unit=extracted.unit,
+            normalized_value=extracted.normalized_value,
+            normalized_unit=extracted.normalized_unit,
             as_of=extracted.as_of,
             scope=extracted.scope,
             source_doc_id=source_doc_id,
