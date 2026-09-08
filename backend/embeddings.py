@@ -121,31 +121,41 @@ def get_embeddings_batch(
 
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if gemini_key:
-        try:
-            from google import genai
+        import time
+        from google import genai
 
-            client = genai.Client(api_key=gemini_key)
-            model_name = model or os.getenv("EMBEDDING_MODEL") or "gemini-embedding-001"
+        client = genai.Client(api_key=gemini_key)
+        model_name = model or os.getenv("EMBEDDING_MODEL") or "gemini-embedding-001"
 
-            all_embeddings: List[List[float]] = []
-            for i in range(0, len(texts), batch_size):
-                chunk = texts[i : i + batch_size]
-                response = client.models.embed_content(
-                    model=model_name,
-                    contents=chunk if len(chunk) > 1 else chunk[0],
-                )
-                if hasattr(response, "embeddings") and response.embeddings:
-                    all_embeddings.extend([e.values for e in response.embeddings])
-                elif hasattr(response, "embedding") and response.embedding:
-                    all_embeddings.append(response.embedding.values)
-                else:
-                    raise RuntimeError(f"Unexpected response format from embed_content: {response}")
+        all_embeddings: List[List[float]] = []
+        for i in range(0, len(texts), batch_size):
+            chunk = texts[i : i + batch_size]
+            max_attempts = 4
+            response = None
+            for attempt in range(max_attempts):
+                try:
+                    response = client.models.embed_content(
+                        model=model_name,
+                        contents=chunk if len(chunk) > 1 else chunk[0],
+                    )
+                    break
+                except Exception as err:
+                    err_str = str(err)
+                    if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str) and attempt < max_attempts - 1:
+                        sleep_time = 15 * (attempt + 1)
+                        print(f"Rate limited in embed_content, waiting {sleep_time}s before retry...", file=sys.stderr)
+                        time.sleep(sleep_time)
+                    else:
+                        raise err
 
-            return all_embeddings
-        except Exception as err:
-            # If rate-limited or unexpected API failure, fallback gracefully
-            print(f"Warning: Gemini embedding failed ({err}), falling back to deterministic embedding.", file=sys.stderr)
-            return [_generate_mock_embedding(t) for t in texts]
+            if hasattr(response, "embeddings") and response.embeddings:
+                all_embeddings.extend([e.values for e in response.embeddings])
+            elif hasattr(response, "embedding") and response.embedding:
+                all_embeddings.append(response.embedding.values)
+            else:
+                raise RuntimeError(f"Unexpected response format from embed_content: {response}")
+
+        return all_embeddings
 
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
