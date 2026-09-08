@@ -298,11 +298,24 @@ def classify_relationship(
 
         except Exception as err:
             err_lower = str(err).lower()
-            is_rate_limit = any(k in err_lower for k in ["429", "resource_exhausted", "quota", "too many requests"])
-            if is_rate_limit and attempt < max_retries - 1:
+            is_transient = any(
+                k in err_lower
+                for k in [
+                    "429",
+                    "resource_exhausted",
+                    "quota",
+                    "too many requests",
+                    "503",
+                    "unavailable",
+                    "high demand",
+                    "overloaded",
+                    "servererror",
+                ]
+            )
+            if is_transient and attempt < max_retries - 1:
                 sleep_secs = min(60.0, initial_backoff * (2 ** attempt))
                 print(
-                    f"Warning: Rate limit hit (429) during relationship classification. "
+                    f"Warning: Transient API condition ({type(err).__name__}) encountered during relationship classification. "
                     f"Backing off for {sleep_secs:.1f}s (retry {attempt + 1}/{max_retries})...",
                     file=sys.stderr,
                 )
@@ -359,13 +372,22 @@ def get_existing_relationship_pairs(
     conn: Optional[sqlite3.Connection] = None,
     db_path: Optional[Union[str, Path]] = None,
 ) -> Set[Tuple[str, str]]:
-    """Retrieves all canonical (fact_a_id, fact_b_id) pairs already present in the relationships table."""
+    """Retrieves all canonical (fact_a_id, fact_b_id) pairs already evaluated or stored."""
     if conn is None:
         conn = get_connection(db_path)
 
     cursor = conn.cursor()
     cursor.execute("SELECT fact_a_id, fact_b_id FROM relationships;")
-    return {make_canonical_pair_key(r[0], r[1]) for r in cursor.fetchall()}
+    pairs = {make_canonical_pair_key(r[0], r[1]) for r in cursor.fetchall()}
+
+    # Also load pairs tracked in evaluated_pairs (which includes 'unrelated' decisions)
+    try:
+        cursor.execute("SELECT fact_a_id, fact_b_id FROM evaluated_pairs;")
+        pairs.update({make_canonical_pair_key(r[0], r[1]) for r in cursor.fetchall()})
+    except Exception:
+        pass
+
+    return pairs
 
 
 def get_all_stored_relationships(
@@ -419,6 +441,7 @@ def link_facts(
     doc_id: Optional[str] = None,
     top_k: int = 5,
     min_sim: float = 0.70,
+    max_pairs: Optional[int] = None,
     model: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
     db_path: Optional[Union[str, Path]] = None,
@@ -499,6 +522,12 @@ def link_facts(
             seen_in_batch.add(pair_key)
             queued_pairs.append((pair_key, target_fact, cand_fact, sim))
 
+    # Sort queued pairs descending by similarity so strongest semantic connections evaluate first
+    queued_pairs.sort(key=lambda x: x[3], reverse=True)
+
+    if max_pairs is not None and max_pairs > 0:
+        queued_pairs = queued_pairs[:max_pairs]
+
     if verbose:
         print(
             f"Found {len(queued_pairs)} unique candidate cross-document pairs to evaluate with LLM.",
@@ -527,7 +556,16 @@ def link_facts(
             print(f"  -> Result: {judgement.type.upper()} (conf: {judgement.confidence:.2f})", file=sys.stderr)
             print(f"     Reasoning: {judgement.reasoning}\n", file=sys.stderr)
 
+        if not dry_run:
+            can_a, can_b = pair_key
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO evaluated_pairs (fact_a_id, fact_b_id) VALUES (?, ?);",
+                    (can_a, can_b),
+                )
+
         if judgement.type == "unrelated":
+            time.sleep(1.0)
             continue
 
         rel = Relationship(
@@ -542,6 +580,9 @@ def link_facts(
             store_relationship(rel, conn=conn)
 
         relationships_created.append(rel)
+
+        # Pacing pause to remain well within API rate and concurrency quotas
+        time.sleep(2.0)
 
     if verbose:
         print(
@@ -581,6 +622,12 @@ def main() -> None:
         type=float,
         default=0.70,
         help="Minimum cosine similarity threshold floor (default: 0.70).",
+    )
+    parser.add_argument(
+        "--max-pairs",
+        type=int,
+        default=None,
+        help="Maximum candidate pairs to evaluate (evaluated in order of descending cosine similarity).",
     )
     parser.add_argument(
         "--model",
@@ -626,6 +673,7 @@ def main() -> None:
         doc_id=args.doc_id,
         top_k=args.top_k,
         min_sim=args.min_sim,
+        max_pairs=args.max_pairs,
         model=args.model,
         db_path=args.db,
         dry_run=args.dry_run,

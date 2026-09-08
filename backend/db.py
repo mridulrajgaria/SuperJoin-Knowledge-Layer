@@ -101,4 +101,16 @@ def init_db(
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_fact_b ON relationships(fact_b_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type);")
 
+        # Track evaluated candidate pairs (including 'unrelated') to avoid redundant LLM re-evaluation
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evaluated_pairs (
+                fact_a_id TEXT NOT NULL,
+                fact_b_id TEXT NOT NULL,
+                evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (fact_a_id, fact_b_id)
+            );
+            """
+        )
+
     return conn
