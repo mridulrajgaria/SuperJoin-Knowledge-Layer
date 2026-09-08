@@ -230,3 +230,209 @@ async def upload_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
         "errors": errors,
     }
 
+
+def format_fact_row(row: sqlite3.Row) -> Dict[str, Any]:
+    """Serializes a facts table SQLite row into a clean dictionary."""
+    extra_data = {}
+    if row["extra"]:
+        try:
+            extra_data = json.loads(row["extra"])
+        except Exception:
+            extra_data = {}
+
+    return {
+        "id": row["id"],
+        "entity": row["entity"],
+        "attribute": row["attribute"],
+        "value": row["value"],
+        "unit": row["unit"],
+        "normalized_value": row["normalized_value"],
+        "normalized_unit": row["normalized_unit"],
+        "as_of": row["as_of"],
+        "scope": row["scope"],
+        "source_doc_id": row["source_doc_id"],
+        "page_number": row["page_number"],
+        "evidence_text": row["evidence_text"],
+        "confidence": row["confidence"],
+        "extra": extra_data,
+        "created_at": row["created_at"] if "created_at" in row.keys() else None,
+    }
+
+
+@app.get("/facts")
+def get_facts(
+    source_doc_id: Optional[str] = None,
+    entity: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieves facts from storage with optional filtering by source_doc_id and entity.
+    """
+    conn = get_db()
+    query = """
+    SELECT id, entity, attribute, value, unit, normalized_value, normalized_unit,
+           as_of, scope, source_doc_id, page_number, evidence_text, confidence, extra, created_at
+    FROM facts
+    WHERE 1=1
+    """
+    params: List[Any] = []
+
+    if source_doc_id:
+        query += " AND source_doc_id = ?"
+        params.append(source_doc_id.strip())
+
+    if entity:
+        query += " AND LOWER(entity) LIKE ?"
+        params.append(f"%{entity.strip().lower()}%")
+
+    query += " ORDER BY source_doc_id, page_number, entity, attribute;"
+
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    return [format_fact_row(row) for row in cursor.fetchall()]
+
+
+@app.get("/facts/{fact_id}")
+def get_fact_by_id(fact_id: str) -> Dict[str, Any]:
+    """
+    Retrieves full details for a single fact by its ID. Returns 404 if not found.
+    """
+    conn = get_db()
+    query = """
+    SELECT id, entity, attribute, value, unit, normalized_value, normalized_unit,
+           as_of, scope, source_doc_id, page_number, evidence_text, confidence, extra, created_at
+    FROM facts
+    WHERE id = ?;
+    """
+    cursor = conn.cursor()
+    cursor.execute(query, (fact_id.strip(),))
+    row = cursor.fetchone()
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Fact with id '{fact_id}' not found.",
+        )
+
+    return format_fact_row(row)
+
+
+@app.get("/relationships")
+def get_relationships(
+    type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieves relationships between facts, embedding full fact_a and fact_b records
+    directly in the response so callers do not need secondary lookups.
+    Supports optional ?type= filter ('corroborates', 'contradicts', 'reconciled_by_context').
+    """
+    conn = get_db()
+    query = """
+    SELECT 
+        r.id AS rel_id,
+        r.type,
+        r.reasoning,
+        r.confidence,
+        r.created_at,
+        fa.id AS fa_id,
+        fa.entity AS fa_entity,
+        fa.attribute AS fa_attribute,
+        fa.value AS fa_value,
+        fa.unit AS fa_unit,
+        fa.normalized_value AS fa_normalized_value,
+        fa.normalized_unit AS fa_normalized_unit,
+        fa.as_of AS fa_as_of,
+        fa.scope AS fa_scope,
+        fa.source_doc_id AS fa_source_doc_id,
+        fa.page_number AS fa_page_number,
+        fa.evidence_text AS fa_evidence_text,
+        fa.confidence AS fa_confidence,
+        fa.extra AS fa_extra,
+        fb.id AS fb_id,
+        fb.entity AS fb_entity,
+        fb.attribute AS fb_attribute,
+        fb.value AS fb_value,
+        fb.unit AS fb_unit,
+        fb.normalized_value AS fb_normalized_value,
+        fb.normalized_unit AS fb_normalized_unit,
+        fb.as_of AS fb_as_of,
+        fb.scope AS fb_scope,
+        fb.source_doc_id AS fb_source_doc_id,
+        fb.page_number AS fb_page_number,
+        fb.evidence_text AS fb_evidence_text,
+        fb.confidence AS fb_confidence,
+        fb.extra AS fb_extra
+    FROM relationships r
+    JOIN facts fa ON r.fact_a_id = fa.id
+    JOIN facts fb ON r.fact_b_id = fb.id
+    WHERE 1=1
+    """
+    params: List[Any] = []
+
+    if type:
+        query += " AND r.type = ?"
+        params.append(type.strip().lower())
+
+    query += " ORDER BY r.created_at DESC;"
+
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+
+    relationships = []
+    for row in cursor.fetchall():
+        fa_extra = {}
+        if row["fa_extra"]:
+            try:
+                fa_extra = json.loads(row["fa_extra"])
+            except Exception:
+                fa_extra = {}
+
+        fb_extra = {}
+        if row["fb_extra"]:
+            try:
+                fb_extra = json.loads(row["fb_extra"])
+            except Exception:
+                fb_extra = {}
+
+        relationships.append({
+            "id": row["rel_id"],
+            "type": row["type"],
+            "reasoning": row["reasoning"],
+            "confidence": row["confidence"],
+            "created_at": row["created_at"],
+            "fact_a": {
+                "id": row["fa_id"],
+                "entity": row["fa_entity"],
+                "attribute": row["fa_attribute"],
+                "value": row["fa_value"],
+                "unit": row["fa_unit"],
+                "normalized_value": row["fa_normalized_value"],
+                "normalized_unit": row["fa_normalized_unit"],
+                "as_of": row["fa_as_of"],
+                "scope": row["fa_scope"],
+                "source_doc_id": row["fa_source_doc_id"],
+                "page_number": row["fa_page_number"],
+                "evidence_text": row["fa_evidence_text"],
+                "confidence": row["fa_confidence"],
+                "extra": fa_extra,
+            },
+            "fact_b": {
+                "id": row["fb_id"],
+                "entity": row["fb_entity"],
+                "attribute": row["fb_attribute"],
+                "value": row["fb_value"],
+                "unit": row["fb_unit"],
+                "normalized_value": row["fb_normalized_value"],
+                "normalized_unit": row["fb_normalized_unit"],
+                "as_of": row["fb_as_of"],
+                "scope": row["fb_scope"],
+                "source_doc_id": row["fb_source_doc_id"],
+                "page_number": row["fb_page_number"],
+                "evidence_text": row["fb_evidence_text"],
+                "confidence": row["fb_confidence"],
+                "extra": fb_extra,
+            },
+        })
+
+    return relationships
+
+
