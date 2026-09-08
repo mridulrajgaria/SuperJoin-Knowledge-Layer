@@ -8,7 +8,7 @@ Defines the Pydantic data models for Fact extraction as specified in PROJECT.md:
 """
 
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -195,3 +195,24 @@ class Relationship(BaseModel):
         le=1.0,
         description="Confidence score for this relationship judgement.",
     )
+
+
+class FactRelationshipJudgement(BaseModel):
+    """
+    Structured response schema for LLM relationship classification.
+    """
+    type: Literal["corroborates", "contradicts", "reconciled_by_context", "unrelated"] = Field(
+        ...,
+        description="Type of relationship: 'corroborates', 'contradicts', 'reconciled_by_context', or 'unrelated'.",
+    )
+    reasoning: str = Field(
+        ...,
+        description="Detailed explanation detailing why the facts corroborate, contradict, or reconcile, citing specific values, periods, scopes, or units.",
+    )
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for this relationship judgement.",
+    )
+

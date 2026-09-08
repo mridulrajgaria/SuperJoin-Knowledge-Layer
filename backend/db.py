@@ -81,7 +81,7 @@ def init_db(
         conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_source_doc ON facts(source_doc_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_as_of ON facts(as_of);")
 
-        # Relationships Table (Phase 4 schema placeholder)
+        # Relationships Table (Phase 4)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS relationships (
@@ -91,10 +91,12 @@ def init_db(
                 type TEXT NOT NULL CHECK(type IN ('corroborates', 'contradicts', 'reconciled_by_context')),
                 reasoning TEXT NOT NULL,
                 confidence REAL NOT NULL DEFAULT 1.0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(fact_a_id, fact_b_id)
             );
             """
         )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rel_fact_pair ON relationships(fact_a_id, fact_b_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_fact_a ON relationships(fact_a_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_fact_b ON relationships(fact_b_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type);")
