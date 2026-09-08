@@ -171,6 +171,7 @@ def _merge_prose_blocks(candidate_blocks: List[Any], page_width: float) -> List[
 def extract_chunks(
     pdf_path: str | Path,
     doc_id: Optional[str] = None,
+    use_vision_fallback: bool = True,
 ) -> List[Chunk]:
     """
     Given a PDF file path, extracts page-anchored chunks from each page.
@@ -278,7 +279,101 @@ def extract_chunks(
     finally:
         doc.close()
 
+    # If standard digital text extraction produced 0 chunks (e.g. scanned documents or
+    # vectorized typography from Microsoft Print to PDF where characters are rendered as curves),
+    # gracefully attempt multimodal vision ingestion fallback if enabled.
+    if not chunks and use_vision_fallback:
+        chunks = extract_chunks_via_vision(path, doc_id=effective_doc_id)
+
     return chunks
+
+
+def extract_chunks_via_vision(
+    pdf_path: str | Path,
+    doc_id: Optional[str] = None,
+    dpi: int = 150,
+) -> List[Chunk]:
+    """
+    Multimodal Vision Ingestion Fallback for scanned or vectorized/non-text PDFs
+    (e.g., printed via Microsoft Print to PDF where characters are rendered as Bézier curves).
+    Renders pages as images and uses Gemini Vision to transcribe the visual page into text paragraphs.
+    """
+    path = Path(pdf_path)
+    effective_doc_id = doc_id if doc_id else path.stem
+
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not gemini_key:
+        return []
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        model_name = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite"
+        client = genai.Client(api_key=gemini_key)
+
+        doc = pymupdf.open(str(path))
+        chunks: List[Chunk] = []
+
+        try:
+            for page_idx in range(len(doc)):
+                page_num = page_idx + 1
+                page = doc[page_idx]
+                pix = page.get_pixmap(dpi=dpi)
+                img_bytes = pix.tobytes("png")
+
+                prompt = (
+                    "Transcribe all factual content, infoboxes, tables, headers, and paragraphs from this document page verbatim. "
+                    "Output as clean, readable text separated by blank lines between paragraphs or table sections. "
+                    "Preserve exact numbers, dates, currency symbols, and entity names without summarizing."
+                )
+
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                        prompt,
+                    ],
+                )
+                raw_text = response.text or ""
+                paras = [p.strip() for p in raw_text.split("\n\n") if len(p.strip()) > 20]
+
+                # Group adjacent paragraphs into ~1200 char chunks to minimize downstream LLM calls
+                current: List[str] = []
+                current_len = 0
+                for p in paras:
+                    if current and (current_len + len(p) > 1200):
+                        chunks.append(
+                            {
+                                "doc_id": effective_doc_id,
+                                "page_number": page_num,
+                                "text": "\n\n".join(current),
+                                "chunk_type": "text",
+                            }
+                        )
+                        current = [p]
+                        current_len = len(p)
+                    else:
+                        current.append(p)
+                        current_len += len(p) + 2
+
+                if current:
+                    chunks.append(
+                        {
+                            "doc_id": effective_doc_id,
+                            "page_number": page_num,
+                            "text": "\n\n".join(current),
+                            "chunk_type": "text",
+                        }
+                    )
+        finally:
+            doc.close()
+
+        return chunks
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Vision ingestion fallback failed for {pdf_path}: {exc}")
+        return []
 
 
 def main() -> None:
