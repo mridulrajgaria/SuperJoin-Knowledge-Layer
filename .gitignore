@@ -26,3 +26,7 @@ Thumbs.db
 # Sample PDF files (large binaries kept locally)
 data/samples/**/*.pdf
 !data/samples/.gitkeep
+
+# Extracted facts output (local inspection artifacts)
+data/extracted/**/*.json
+!data/extracted/.gitkeep
