@@ -94,7 +94,7 @@ PDF Upload → Ingestion → LLM Extraction → Storage + Embeddings → Cross-D
 ### AI Tools Used
 
 - **Antigravity (Google)**: Used for the entire build — architecture planning, implementation, debugging, and verification. Every implementation plan was reviewed before execution and every phase completion verified against real output (live API calls, database queries, Playwright DOM inspection) before proceeding to the next phase.
-- **Gemini**: Used at runtime for three distinct purposes: (1) structured fact extraction from document chunks via `gemini-2.5-flash`, (2) vector embedding generation via `gemini-embedding-001` for cross-document retrieval, and (3) LLM-judge relationship classification with structured reasoning output.
+- **Gemini**: Used at runtime for three distinct purposes: (1) structured fact extraction from document chunks via `gemini-3.6-flash`, (2) vector embedding generation via `gemini-embedding-001` for cross-document retrieval, and (3) LLM-judge relationship classification with structured reasoning output via `gemini-3.6-flash`.
 
 ---
 
