@@ -1,4 +1,4 @@
-# Fact Knowledge Layer — Evidence Intelligence Workspace
+# Fact Knowledge Layer
 
 A document intelligence and fact-verification system that ingests PDF documents, extracts structured facts grounded in source evidence, and discovers cross-document relationships (corroboration, contradiction, contextual reconciliation) using embedding retrieval and LLM-based reasoning.
 
@@ -47,7 +47,7 @@ Open [http://localhost:8000](http://localhost:8000) in a browser. The applicatio
 python -m pytest tests/ -q
 ```
 
-31 tests currently pass, covering ingestion, extraction, storage, linking, and API endpoints.
+31 tests pass, covering ingestion, extraction, storage, linking, and API endpoints.
 
 ---
 
@@ -68,7 +68,7 @@ The system is built as a five-phase pipeline, each phase independently testable 
 PDF Upload → Ingestion → LLM Extraction → Storage + Embeddings → Cross-Document Linking → API/UI
 ```
 
-**1. Ingestion** (`backend/ingest.py`): Parses PDFs into page-anchored chunks using PyMuPDF. Detects tables via `page.find_tables()`, extracts them separately from prose text blocks, and merges adjacent text blocks that were split across columns into coherent paragraphs. Includes a multimodal vision fallback (`extract_chunks_via_vision`) that renders pages as images and uses Gemini's vision model to extract text from PDFs where standard text extraction returns zero characters (e.g., "Microsoft Print to PDF" documents that vectorize typography into Bézier curves instead of character streams).
+**1. Ingestion** (`backend/ingest.py`): Parses PDFs into page-anchored chunks using PyMuPDF. Detects tables via `page.find_tables()`, extracts them separately from prose text blocks, and merges adjacent text blocks that were split across columns into coherent paragraphs. Each chunk carries `{doc_id, page_number, text, chunk_type}`.
 
 **2. Extraction** (`backend/extract.py`): Sends each chunk to Gemini with a structured output schema (Pydantic `ExtractedFact` model) to extract atomic facts. A heuristic pre-filter skips chunks unlikely to contain factual content (boilerplate, disclaimers, ToC entries). Every extracted fact is validated with evidence grounding — the `evidence_text` field must be an exact substring of the source chunk, or the fact is rejected. Includes rate-limit backoff with retry and batch checkpointing.
 
@@ -84,7 +84,7 @@ PDF Upload → Ingestion → LLM Extraction → Storage + Embeddings → Cross-D
 
 - **Embedding-then-LLM-judge for relationships**: Rather than using pure embedding similarity thresholds (which conflate semantic closeness with factual agreement) or sending all pairs to the LLM (which is expensive), the system uses embeddings as a cheap recall stage and the LLM as a precision stage. The LLM must produce explicit reasoning referencing the specific difference (period, scope, unit) that justifies the classification.
 
-- **SQLite**: Chosen for zero-dependency deployment. Vector search is brute-force cosine similarity over in-memory numpy arrays loaded from BLOB columns — adequate for the scale of this prototype (hundreds of facts, not millions). No external vector database required.
+- **SQLite with in-process vector search**: Chosen for zero-dependency deployment. Vector search is brute-force cosine similarity over in-memory numpy arrays loaded from BLOB columns — adequate for the scale of this prototype (hundreds of facts, not millions). No external vector database required.
 
 - **Synchronous upload processing**: The `POST /upload` endpoint blocks until the full pipeline completes (typically 1–2 minutes depending on document size and API latency). This simplifies the architecture — no job queue, no polling, no WebSocket progress updates. The tradeoff is a long HTTP request, which the frontend handles with a processing spinner and status messaging.
 
@@ -97,47 +97,21 @@ PDF Upload → Ingestion → LLM Extraction → Storage + Embeddings → Cross-D
 
 ---
 
-## Current Data State
-
-The database (`facts.db`) currently contains **217 facts** across **9 documents** and **32 cross-document relationships**:
-
-| Document | Facts | Pages |
-|---|---|---|
-| `01-delhivery-prospectus-2022-excerpt` | 34 | 1, 50 |
-| `02-delhivery-annual-report-fy24-excerpt` | 12 | 2 |
-| `03-delhivery-q4-fy24-earnings-presentation` | 25 | 8 |
-| `01-india-economic-survey-2024-25-excerpt` | 6 | 76 |
-| `02-rbi-annual-report-2024-25-excerpt` | 19 | 24 |
-| `03-imf-india-2025-article-iv-excerpt` | 10 | 44 |
-| `coca-cola` (uploaded, vision fallback) | 39 | 1, 2 |
-| `toyota` (uploaded, vision fallback) | 70 | 1, 2 |
-| `plivo (1)` (uploaded) | 2 | 1 |
-
-| Relationship Type | Count |
-|---|---|
-| Corroborates | 5 |
-| Reconciled by Context | 23 |
-| Contradicts | 4 |
-
-All 6 starter documents (3 Delhivery, 3 India macro) have been fully processed. The coca-cola and toyota PDFs were processed via the multimodal vision ingestion fallback after standard text extraction returned zero characters.
-
----
-
 ## Limitations and Next Steps
 
 ### Current Limitations
 
-- **No OCR for scanned PDFs**: The system handles two classes of PDF — standard digital text (PyMuPDF extraction) and vectorized non-text PDFs (Gemini vision fallback). True scanned/image-only PDFs with no vector content would require OCR integration (e.g., Tesseract), which is not implemented.
+- **No OCR support for scanned PDFs**: The ingestion module relies on PyMuPDF's digital text extraction. Scanned or image-only PDFs with no embedded text layer will produce zero chunks and zero facts. OCR integration (e.g., Tesseract) is not implemented.
 
-- **Extraction is page-specific, not full-document**: The starter documents are multi-page PDFs but the assignment provided page-specific excerpts for extraction. Facts are extracted only from the specified excerpt pages — for example, the Delhivery prospectus extracts from pages 1 and 50, not all 200+ pages. This is by design for the prototype scope but means coverage within each document is partial.
+- **Extraction is page-specific, not full-document**: The starter documents are multi-page PDFs but the assignment provided page-specific excerpts. Facts are extracted only from the specified excerpt pages — for example, the Delhivery prospectus extracts from pages 1 and 50, not all 200+ pages. The database currently contains 106 facts across the 6 starter documents and 32 cross-document relationships (5 corroborates, 23 reconciled by context, 4 contradicts). Coverage within each document is partial by design for prototype scope.
 
-- **No PDF viewer or evidence highlighting**: The UI shows evidence text as quoted strings and cites the source document and page number, but does not render the original PDF page or highlight the evidence span within it. Adding a PDF.js viewer with bounding-box highlighting would significantly improve the verification workflow.
+- **No PDF viewer or evidence highlighting**: The UI shows evidence text as quoted strings and cites the source document and page number, but does not render the original PDF page or highlight the evidence span within it.
 
-- **No review/approval workflow**: Extracted facts go directly into the database. There is no human-in-the-loop stage where an analyst can accept, reject, or modify facts before they enter the knowledge base. In a production system, this would be essential for quality control.
+- **No review/approval workflow**: Extracted facts go directly into the database. There is no human-in-the-loop stage where an analyst can accept, reject, or modify facts before they enter the knowledge base.
 
-- **Entity naming inconsistency**: The LLM extraction sometimes produces variant entity names for the same real-world entity (e.g., "Coca-Cola" vs "Coca-Cola Company" vs "The Coca-Cola Company", or "Delhivery" vs "Delhivery Limited" from live upload testing). There is no entity resolution or canonicalization layer — each variant is stored as a distinct entity. A normalization pass (fuzzy matching, alias table, or entity-linking model) would improve cross-document recall.
+- **Entity naming inconsistency**: The LLM extraction sometimes produces variant entity names for the same real-world entity (e.g., "Delhivery" vs "Delhivery Limited" from live upload testing). There is no entity resolution or canonicalization layer — each variant is stored as a distinct entity. A normalization pass (fuzzy matching or alias table) would improve cross-document recall.
 
-- **Brute-force vector search**: Embedding similarity is computed via full numpy scan over all stored vectors. This is fine at ~200 facts but would not scale to production volumes without an approximate nearest-neighbor index (FAISS, pgvector, etc.).
+- **Brute-force vector search**: Embedding similarity is computed via full numpy scan over all stored vectors. This is adequate at ~100 facts but would not scale to production volumes without an approximate nearest-neighbor index (FAISS, pgvector, etc.).
 
 ### Next Steps
 
@@ -146,6 +120,7 @@ All 6 starter documents (3 Delhivery, 3 India macro) have been fully processed. 
 - Fact review/approval workflow with accept/reject/edit states
 - Async upload processing with progress WebSocket
 - Incremental relationship updates (re-link only new facts, not full re-scan)
+- OCR integration for scanned documents
 
 ---
 
@@ -157,19 +132,12 @@ Two real failures were found during development and documented as part of the fo
 
 **1. `as_of` temporal hallucination**: The LLM extraction model invented fiscal quarter labels (Q1 FY24, Q2 FY24, etc.) for a series of numeric values in the Delhivery Q4 FY24 earnings presentation page 8, where the source content was a simple grid of numbers with no column headers or period labels. The model fabricated temporal markers that seemed plausible given the document context but were not grounded in the actual text.
 
-**Fix applied**: Three-layer defense: (a) prompt hardening with explicit instructions to set `as_of` to null when period labels are absent, (b) programmatic evidence-grounding validation that checks whether the claimed `as_of` value appears in the source chunk text, and (c) a document-level `as_of` inference module that backfills null periods only from unambiguous cover-page/title patterns (regex-based, not LLM-based), preserving null when ambiguous rather than guessing. This is committed in `8cc9dbf fix(as_of): preserve null as_of for ambiguous multi-value series without column headers`.
+*Fix applied*: Three-layer defense — (a) prompt hardening with explicit instructions to set `as_of` to null when period labels are absent, (b) programmatic evidence-grounding validation that checks whether the claimed `as_of` value appears in the source chunk text, and (c) a document-level `as_of` inference module that backfills null periods only from unambiguous cover-page/title patterns (regex-based, not LLM-based), preserving null when ambiguous rather than guessing.
 
-**2. Infographic column-merge bug (2.8Bn workforce)**: The Delhivery annual report excerpt page 2 uses a visual infographic layout with large display numbers. The ingestion layer's column-detection heuristic merged the number "2.8Bn" (which referred to shipments handled) with the adjacent label "Workforce strength", producing the chunk text "2.8Bn Workforce strength". The LLM faithfully extracted this as `entity: Delhivery, attribute: workforce strength, value: 2.8Bn` — a correct extraction of incorrect input. This was then flagged as a contradiction against the Q4 earnings deck's team-size figures (63,713 / 63,144 / 60,373 / 57,307) during cross-document linking, which is the system correctly identifying that 2.8 billion employees is impossible for a logistics company.
+**2. Infographic column-merge bug (2.8Bn workforce)**: The Delhivery annual report excerpt page 2 uses a visual infographic layout with large display numbers. The ingestion layer's column-detection heuristic merged the number "2.8Bn" (which referred to shipments handled) with the adjacent label "Workforce strength", producing the chunk text "2.8Bn Workforce strength". The LLM faithfully extracted this as `entity: Delhivery, attribute: workforce strength, value: 2.8Bn` — a correct extraction of incorrect input. This was then flagged as a contradiction against the Q4 earnings deck's team-size figures (63,713 / 63,144 / 60,373 / 57,307), which is the system correctly identifying that 2.8 billion employees is impossible for a logistics company.
 
-**Resolution**: This is documented as a genuine ingestion layout bug — the column-midpoint merge heuristic in `_merge_prose_blocks` fails on infographic layouts where adjacent display numbers and labels occupy different visual columns but should be read independently. A fix would require layout-aware spatial analysis (e.g., using text block bounding boxes to detect infographic grids vs. prose columns). The contradiction is surfaced in the UI with a "Flagged — requires verification" badge as a display-only annotation.
+*Status*: Documented as a genuine ingestion layout bug — the column-midpoint merge heuristic fails on infographic layouts where adjacent display numbers and labels occupy different visual columns but should be read independently. The contradiction is surfaced in the UI with a "Flagged — requires verification" badge.
 
 ### Build Process
 
-The system was built incrementally across 38 commits over a single session, following the phased architecture in `PROJECT.md`. Every phase was planned, reviewed, implemented, and verified against real output before moving to the next:
-
-- Phase 1 (Ingestion): 6 commits — PDF parsing, table detection, column-merge fixes
-- Phase 2 (Extraction): 6 commits — LLM structured extraction, evidence grounding, entity/attribute rules
-- Phase 3 (Storage): 8 commits — SQLite schema, embeddings, upsert idempotency, as_of inference
-- Phase 4 (Linking): 7 commits — candidate retrieval, LLM classification, deduplication, caching
-- Phase 5 (API/UI): 7 commits — FastAPI endpoints, frontend build, upload workflow, filter fixes
-- Bug fixes found during live testing: 4 commits — zero-fact handling, entity normalization, icon fixes, vision fallback
+The system was built incrementally across 39 commits over a single session, following the phased architecture in `PROJECT.md`. Every phase was planned, reviewed, and verified against real output before moving to the next. The upload pipeline was also tested against unrelated third-party documents (not part of the starter dataset) to verify generalization — the system processes arbitrary PDFs without document-specific rules or hardcoded entity lists.
