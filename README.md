@@ -53,8 +53,9 @@ python -m pytest tests/ -q
 
 ## Video Demo
 
-<!-- TODO: Insert video link here -->
-*Video link to be added — demonstrates a PDF being processed end-to-end, a corroborated fact, a genuine contradiction, a reconciliation by context, and a documented extraction failure.*
+[Watch the Demo Video (Google Drive)](https://drive.google.com/file/d/1M7_rJOE4SC1C3Ey5bAr9mF79yCGCiZOD/view?usp=sharing)
+
+*Demonstrates end-to-end PDF processing, corroborated facts, genuine contradictions, contextual reconciliation, and the documented extraction failure case.*
 
 ---
 
