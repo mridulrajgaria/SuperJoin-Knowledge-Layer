@@ -53,8 +53,8 @@ python -m pytest tests/ -q
 
 ## Video Demo
 
-<!-- TODO: Insert video demo link here -->
-*Video link to be added.*
+<!-- TODO: Insert video link here -->
+*Video link to be added — demonstrates a PDF being processed end-to-end, a corroborated fact, a genuine contradiction, a reconciliation by context, and a documented extraction failure.*
 
 ---
 
