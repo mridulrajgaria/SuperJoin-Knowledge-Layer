@@ -12,8 +12,8 @@ A document intelligence and fact-verification system that ingests PDF documents,
 ### Installation
 
 ```bash
-git clone https://github.com/mridulrajgaria/fact-knowledge-layer.git
-cd fact-knowledge-layer
+git clone https://github.com/mridulrajgaria/SuperJoin-Knowledge-Layer.git
+cd SuperJoin-Knowledge-Layer
 pip install -r requirements.txt --break-system-packages
 ```
 
